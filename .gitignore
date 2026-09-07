@@ -137,3 +137,8 @@ docs/plans/
 # Nous campaign orchestration (experiment worktrees + state, not committed)
 .nous-experiments/
 .nous/
+
+blis.exe
+smoke.out
+smoke.err
+ours/results/
