@@ -1,0 +1,26 @@
+version: "2"
+seed: 42
+aggregate_rate: 40.0        # total lambda, requests per second
+num_requests: 3000
+
+clients:
+  - id: "type1-short-chat"  # P = 256, mean output 64
+    tenant_id: "type1"
+    rate_fraction: 0.5
+    arrival: { process: poisson }
+    input_distribution:  { type: constant,    params: { value: 256 } }
+    output_distribution: { type: exponential, params: { mean: 64, min: 1, max: 2048 } }
+
+  - id: "type2-rag"         # P = 2048, mean output 128
+    tenant_id: "type2"
+    rate_fraction: 0.35
+    arrival: { process: poisson }
+    input_distribution:  { type: constant,    params: { value: 2048 } }
+    output_distribution: { type: exponential, params: { mean: 128, min: 1, max: 2048 } }
+
+  - id: "type3-longgen"     # P = 512, mean output 1024: the memory hog
+    tenant_id: "type3"
+    rate_fraction: 0.15
+    arrival: { process: poisson }
+    input_distribution:  { type: constant,    params: { value: 512 } }
+    output_distribution: { type: exponential, params: { mean: 1024, min: 1, max: 4096 } }

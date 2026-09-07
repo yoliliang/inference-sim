@@ -129,7 +129,7 @@ func LoadPolicyBundle(path string) (*PolicyBundle, error) {
 var (
 	validAdmissionPolicies      = map[string]bool{"": true, "always-admit": true, "token-bucket": true, "reject-all": true, "tier-shed": true, "gaie-legacy": true}
 	validRoutingPolicies        = map[string]bool{"": true, "round-robin": true, "least-loaded": true, "weighted": true, "always-busiest": true}
-	validSchedulers             = map[string]bool{"": true, "fcfs": true, "priority-fcfs": true, "sjf": true, "reverse-priority": true}
+	validSchedulers             = map[string]bool{"": true, "fcfs": true, "priority-fcfs": true, "sjf": true, "reverse-priority": true, "type-rank": true}
 	validPreemptionPolicies     = map[string]bool{"": true, "fcfs": true, "priority": true}
 	validLatencyBackends        = map[string]bool{"": true, LatencyBackendRoofline: true, LatencyBackendTrainedPhysics: true}
 	validDisaggregationDeciders = map[string]bool{"": true, "never": true, "always": true, "prefix-threshold": true}

@@ -92,6 +92,8 @@ func NewScheduler(name string) InstanceScheduler {
 		return &SJFScheduler{}
 	case "reverse-priority":
 		return &ReversePriority{}
+	case "type-rank":
+		return NewTypeRankScheduler(nil)
 	default:
 		panic(fmt.Sprintf("unhandled scheduler %q", name))
 	}
