@@ -115,6 +115,7 @@ var (
 	// Scheduler and preemption config
 	scheduler        string // Scheduler name
 	preemptionPolicy string // Preemption victim selection policy
+	batchFormation   string // ours: batch-formation strategy
 
 	// Policy bundle config
 	policyConfigPath string // Path to YAML policy configuration file
@@ -1276,6 +1277,9 @@ func resolvePolicies(cmd *cobra.Command) ([]sim.ScorerConfig, *sim.PolicyBundle)
 	if !sim.IsValidPreemptionPolicy(preemptionPolicy) {
 		logrus.Fatalf("Unknown preemption policy %q. Valid: %s", preemptionPolicy, strings.Join(sim.ValidPreemptionPolicyNames(), ", "))
 	}
+	if !sim.IsValidBatchFormation(batchFormation) { // ours
+		logrus.Fatalf("Unknown batch formation %q. Valid: %s", batchFormation, strings.Join(sim.ValidBatchFormationNames(), ", "))
+	}
 	if !trace.IsValidTraceLevel(traceLevel) {
 		logrus.Fatalf("Unknown trace level %q. Valid: none, decisions", traceLevel)
 	}
@@ -1505,6 +1509,7 @@ func registerSimConfigFlags(cmd *cobra.Command) {
 	// Scheduler and preemption config
 	cmd.Flags().StringVar(&scheduler, "scheduler", "fcfs", "Instance scheduler: fcfs, priority-fcfs, sjf, reverse-priority")
 	cmd.Flags().StringVar(&preemptionPolicy, "preemption-policy", "fcfs", "Preemption victim selection: fcfs (tail-of-batch), priority (least-urgent SLO tier)")
+	cmd.Flags().StringVar(&batchFormation, "batch-formation", "vllm", "ours: batch-formation strategy: vllm (upstream default), ours (custom FormBatch in sim/batch_formation_ours.go)")
 
 	// Policy bundle config
 	cmd.Flags().StringVar(&policyConfigPath, "policy-config", "", "Path to YAML policy configuration file")
@@ -2514,7 +2519,7 @@ var runCmd = &cobra.Command{
 				// wires the SAME dpPlan.PerRankDP from the SAME resolveDPPlacement, so the two
 				// paths agree for every config both support (INV-13).
 				ModelHardwareConfig:  sim.NewModelHardwareConfig(lr.ModelConfig, lr.HWConfig, model, gpu, tensorParallelism, dpPlan.PerRankDP, enableExpertParallel, moeCommBackend, lr.Backend, maxModelLen, dpPlan.EPGroupOptions()...),
-				PolicyConfig:         sim.NewPolicyConfig(scheduler, preemptionPolicy),
+				PolicyConfig:         sim.NewPolicyConfig(scheduler, preemptionPolicy, sim.WithBatchFormation(batchFormation)),
 				LoRAConfig:           loraCfg,
 				SpeculativeConfig:    resolveSpeculativeConfig(cmd),
 				SLOPriorityOverrides: sloPriorityOverrides,

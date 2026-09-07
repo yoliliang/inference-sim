@@ -502,15 +502,28 @@ func (c ModelHardwareConfig) EffectiveExpertShardGroupSize() int {
 type PolicyConfig struct {
 	Scheduler        string // "fcfs" (default), "priority-fcfs", "sjf", "reverse-priority"
 	PreemptionPolicy string // "fcfs" (default) or "priority"
+	BatchFormation   string // ours: "vllm" (default, upstream behaviour) or "ours"
+}
+
+// PolicyOption is a functional option for NewPolicyConfig (ours).
+type PolicyOption func(*PolicyConfig)
+
+// WithBatchFormation selects the batch-formation strategy (ours).
+func WithBatchFormation(name string) PolicyOption {
+	return func(c *PolicyConfig) { c.BatchFormation = name }
 }
 
 // NewPolicyConfig creates a PolicyConfig with all fields explicitly set.
 // This is the canonical constructor — all construction sites must use it (R4).
-func NewPolicyConfig(scheduler, preemptionPolicy string) PolicyConfig {
-	return PolicyConfig{
+func NewPolicyConfig(scheduler, preemptionPolicy string, opts ...PolicyOption) PolicyConfig {
+	c := PolicyConfig{
 		Scheduler:        scheduler,
 		PreemptionPolicy: preemptionPolicy,
 	}
+	for _, o := range opts {
+		o(&c)
+	}
+	return c
 }
 
 // AdapterSpec declares one LoRA adapter in the pre-declared registry
