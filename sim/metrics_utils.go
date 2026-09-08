@@ -28,6 +28,11 @@ type RequestMetrics struct {
 	GatewayQueueDelay float64 `json:"gateway_queue_delay_ms,omitempty"` // #882: time spent in gateway queue (ms)
 	SessionID         string  `json:"session_id,omitempty"`             // #1058: session context for multi-turn metrics
 	RoundIndex        int     `json:"round_index"`                      // #1058: 0 for first round, N for Nth follow-up
+	// ours: per-request preemption accounting and lifecycle outcome. File-only
+	// (Requests[] never reaches stdout) and omitempty, so existing output is unchanged.
+	PreemptionCount int    `json:"preemption_count,omitempty"` // ours: times this request was evicted from the running batch
+	WastedTokens    int64  `json:"wasted_tokens,omitempty"`    // ours: sum over evictions of ProgressIndex at eviction (tokens computed then discarded)
+	Status          string `json:"status,omitempty"`           // ours: completed, unfinished (still queued or running at horizon), rejected (by admission)
 }
 
 // NewRequestMetrics creates a RequestMetrics from a Request and its arrival time.

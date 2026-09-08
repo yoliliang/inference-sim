@@ -46,6 +46,9 @@ type Metrics struct {
 	NumWaitQRequests        []int                     // number of requests in waitQ over different steps
 	NumRunningBatchRequests []int                     // number of request in runningBatch over different steps
 	Requests                map[string]RequestMetrics // request metrics list
+	// ours: requests that never reached an instance (admission rejections) but
+	// should still appear in the file-only Requests[] array. Not aggregated anywhere else.
+	ExtraRequests []RequestMetrics
 
 	// Per-adapter resident-set event counts (LoRA control-plane subsystem).
 	// AdapterLoadCounts[id] is
@@ -283,8 +286,14 @@ func (m *Metrics) EmitOutput(output MetricsOutput, outputFilePath string) error 
 			detail.E2E = m.RequestE2Es[id] / 1e3                                 // zero if not in map
 			detail.ITL = m.RequestITLs[id] / 1e3                                 // ticks → ms (consistent with TTFT, E2E)
 			detail.SchedulingDelay = float64(m.RequestSchedulingDelays[id]) / 1e3 // ticks → ms
+			if _, done := m.RequestE2Es[id]; done { // ours: lifecycle outcome
+				detail.Status = "completed"
+			} else {
+				detail.Status = "unfinished"
+			}
 			output.Requests = append(output.Requests, detail)
 		}
+		output.Requests = append(output.Requests, m.ExtraRequests...) // ours: admission rejections, sorted below with the rest
 
 		sort.Slice(output.Requests, func(i, j int) bool {
 			return output.Requests[i].ArrivedAt < output.Requests[j].ArrivedAt

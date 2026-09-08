@@ -2616,6 +2616,19 @@ var runCmd = &cobra.Command{
 		}
 		cs := cluster.NewClusterSimulator(config, clusterRequestSource, onRequestDone)
 
+		// ours: periodic instance-state sampling (read-only hook, INV-6 safe).
+		var sampler *stateSampler
+		if samplePath, err := resolveStateSamplePath(stateSampleInterval, stateSamplePath, metricsPath); err != nil {
+			logrus.Fatalf("%v", err)
+		} else if samplePath != "" {
+			sampler, err = newStateSampler(samplePath)
+			if err != nil {
+				logrus.Fatalf("state sampler: %v", err)
+			}
+			cs.SetProgressHook(sampler, stateSampleInterval)
+			logrus.Infof("State sampling every %d us to %s", stateSampleInterval, samplePath)
+		}
+
 		// Arrival hook: capture trace-emission references at the cluster's
 		// single arrival boundary so the trace exporter no longer relies on
 		// the eager preGeneratedRequests + followUpRequests list assembly
@@ -2658,6 +2671,11 @@ var runCmd = &cobra.Command{
 
 		if err := cs.Run(); err != nil {
 			logrus.Fatalf("Simulation failed: %v", err)
+		}
+		if sampler != nil { // ours
+			if err := sampler.Close(); err != nil {
+				logrus.Fatalf("state sampler: %v", err)
+			}
 		}
 
 		// Surface any terminal sampler / generator error the lazy source
@@ -3078,6 +3096,8 @@ func init() {
 
 	// Run-specific export
 	runCmd.Flags().StringVar(&traceOutput, "trace-output", "", "Export workload as TraceV2 files (<prefix>.yaml + <prefix>.csv)")
+	runCmd.Flags().Int64Var(&stateSampleInterval, "state-sample-interval", 0, "ours: write one CSV row per instance every N microseconds of simulated time (0 = off)")
+	runCmd.Flags().StringVar(&stateSamplePath, "state-sample-path", "", "ours: CSV path for --state-sample-interval (default: <metrics-path>_state.csv)")
 	runCmd.Flags().StringVar(&metricsPath, "metrics-path", "", "File to write MetricsOutput JSON (aggregate P50/P95/P99 TTFT, E2E, throughput stats). Use --results-path on blis replay for per-request SimResult JSON.")
 
 	// Saturation trace flags (#1516): --detectors + --saturation-config + --saturation-report.

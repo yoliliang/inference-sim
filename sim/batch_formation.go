@@ -61,6 +61,8 @@ type ScheduledRequest struct {
 // PreemptedRequest carries metadata about a preempted request.
 type PreemptedRequest struct {
 	Request *Request
+	// ours: ProgressIndex at eviction, captured before the restart-from-scratch reset.
+	WastedTokens int64
 }
 
 // BatchResult describes the outcome of batch formation.
@@ -439,7 +441,8 @@ func (v *VLLMBatchFormation) preemptForTokens(req *Request, numNewTokens int64, 
 			}
 
 			result.Preempted = append(result.Preempted, PreemptedRequest{
-				Request: preemptedRequest,
+				Request:      preemptedRequest,
+				WastedTokens: preemptedRequest.ProgressIndex, // ours
 			})
 
 			// Restore token budget if preempted request was already scheduled

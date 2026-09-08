@@ -53,6 +53,7 @@ type ClusterSimulator struct {
 	snapshotProvider  *CachedSnapshotProvider
 	routingPolicy     sim.RoutingPolicy
 	rejectedRequests  int            // EC-2: count of requests rejected by admission policy
+	rejectedRequestMetrics []sim.RequestMetrics // ours: one row per admission rejection, for the file-only Requests[] array
 	routingRejections int            // I13: count of requests rejected at routing (no routable instances)
 	shedByTier        map[string]int // per-SLOClass shedding: admission rejections + gateway queue shed + in-flight evictions
 	// injectedByClass: per-SLOClass arrival counter. Incremented in ClusterArrivalEvent.Execute
@@ -1765,6 +1766,7 @@ func mergeInt64Map(dst, src map[string]int64, mapName string) {
 
 func (c *ClusterSimulator) aggregateMetrics() *sim.Metrics {
 	merged := sim.NewMetrics()
+	merged.ExtraRequests = append(merged.ExtraRequests, c.rejectedRequestMetrics...) // ours
 	for _, inst := range c.instances {
 		m := inst.Metrics()
 		merged.CompletedRequests += m.CompletedRequests

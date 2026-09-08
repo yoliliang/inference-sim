@@ -175,6 +175,10 @@ func (e *AdmissionDecisionEvent) Execute(cs *ClusterSimulator) {
 			})
 		}
 		cs.rejectedRequests++
+		// ours: keep a per-request row so rejected requests appear in --metrics-path.
+		rm := sim.NewRequestMetrics(e.request, float64(e.request.ArrivalTime)/1e6)
+		rm.Status = "rejected"
+		cs.rejectedRequestMetrics = append(cs.rejectedRequestMetrics, rm)
 		// Populate per-tier shed counter for every admission rejection, regardless of policy.
 		tier := e.request.SLOClass
 		if tier == "" {

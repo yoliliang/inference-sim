@@ -885,6 +885,12 @@ func (sim *Simulator) scheduleBatch(now int64) {
 	for _, p := range batchResult.Preempted {
 		logrus.Debugf("<< Preemption: %s at %d ticks", p.Request.ID, now)
 		sim.Metrics.PreemptionCount++
+		// ours: per-request preemption accounting (file-only field, see RequestMetrics).
+		if rm, ok := sim.Metrics.Requests[p.Request.ID]; ok {
+			rm.PreemptionCount++
+			rm.WastedTokens += p.WastedTokens
+			sim.Metrics.Requests[p.Request.ID] = rm
+		}
 	}
 
 	// Schedule events for newly scheduled requests and record scheduling metrics
