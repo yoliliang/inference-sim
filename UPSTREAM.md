@@ -22,7 +22,7 @@ Branch: ours
 - sim/scheduler_typerank.go
 - sim/batch_formation_ours.go
 - cmd/state_sample.go (periodic per-instance state CSV via the existing read-only sim.ProgressHook)
-- ours/ (specs, run.ps1, run.sh, results/ gitignored)
+- ours/ (specs, run.ps1, run.sh, sweep.py fixed-horizon grid driver, analyze.py steady-state analysis and panel plots; results/ and experiments/ gitignored)
 
 ## Known pre-existing test failure on Windows
 
