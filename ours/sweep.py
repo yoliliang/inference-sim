@@ -93,6 +93,8 @@ def main():
     ap.add_argument("--question", default="")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-analyze", action="store_true")
+    ap.add_argument("--resume", action="store_true",
+                    help="skip runs whose .json.gz already exists (keeps the existing manifest)")
     ap.add_argument("extra", nargs="*", help="extra BLIS flags after --")
     a = ap.parse_args()
 
@@ -121,9 +123,11 @@ def main():
         "extra_flags": a.extra,
         "rates": rates, "seeds": seeds, "spec_template": a.spec,
     }
-    json.dump(manifest, open(os.path.join(exp, "manifest.json"), "w"), indent=2)
-    with open(os.path.join(exp, "README.md"), "w") as f:
-        f.write(f"# {a.name} ({date})\n\n{a.question or '(no question recorded)'}\n")
+    if not (a.resume and os.path.exists(os.path.join(exp, "manifest.json"))):
+        # a resumed run keeps the manifest and README written when it started
+        json.dump(manifest, open(os.path.join(exp, "manifest.json"), "w"), indent=2)
+        with open(os.path.join(exp, "README.md"), "w") as f:
+            f.write(f"# {a.name} ({date})\n\n{a.question or '(no question recorded)'}\n")
 
     n_ok = 0
     for rate in rates:
@@ -141,6 +145,9 @@ def main():
                    "--metrics-path", out, *a.extra]
             if a.dry_run:
                 print(" ".join(cmd))
+                continue
+            if a.resume and os.path.exists(out + ".gz"):
+                n_ok += 1
                 continue
             with open(log, "w") as lf:
                 rc = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.DEVNULL, stderr=lf).returncode

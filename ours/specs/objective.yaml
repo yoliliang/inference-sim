@@ -1,0 +1,25 @@
+# Revenue management parameters for ours/objective.py. PLACEHOLDER VALUES.
+#
+# Per completed request of type k the system earns
+#     reward_k  = pi_in_k * P + pi_out_k * o          (P input tokens, o output tokens)
+# and pays the congestion cost
+#     cost_k    = h_k * (e - a)                        (sojourn time in seconds, arrival to last token)
+# A rejected request earns and pays nothing. A request still unfinished at the horizon
+# earns nothing and pays h_k * (horizon - a), a lower bound on its true cost.
+#
+# Units: rewards per 1,000 tokens, h per second. Only the ratios matter for ranking policies.
+# Rates are read as total Poisson arrival rate; type shares come from the workload spec.
+
+types:
+  type1:            # short chat, P = 256, mean o = 64
+    pi_in: 1.0
+    pi_out: 4.0
+    h: 1.0
+  type2:            # RAG, P = 2048, mean o = 128
+    pi_in: 1.0
+    pi_out: 4.0
+    h: 1.0
+  type3:            # long generation, P = 512, mean o = 1024
+    pi_in: 1.0
+    pi_out: 4.0
+    h: 1.0
