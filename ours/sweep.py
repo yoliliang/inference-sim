@@ -15,7 +15,7 @@ Two run modes:
 Creates ours/experiments/<date>_<name>/ with:
     manifest.json    commit, grid, flags, run mode, warm-up and tail trims
     specs/           one workload yaml per rate (copied from --spec, rate replaced)
-    runs/            <rate>_s<seed>.json / .log / _state.csv straight from BLIS
+    runs/            <rate>_s<seed>.json.gz / .log / _state.csv straight from BLIS (json gzipped after the run)
     summary_runs.csv one row per (run, tenant type) over the steady-state window
     summary.csv      across-seed mean and 95 percent CI per (rate, tenant type)
     runs/*_panel.png six-panel summary per run, sweep_panel.png across rates
@@ -26,6 +26,7 @@ Extra BLIS flags go after "--", e.g.
 """
 import argparse
 import datetime as dt
+import gzip
 import json
 import os
 import re
@@ -148,6 +149,10 @@ def main():
                 continue
             n_ok += 1
             m = json.load(open(out))
+            # gzip the per-request json (about 350 bytes per request uncompressed)
+            with gzip.open(out + ".gz", "wt", encoding="utf-8") as gz:
+                json.dump(m, gz)
+            os.remove(out)
             unfinished = m["still_queued"] + m["still_running"]
             print(f"{tag:<14} injected={m['injected_requests']:6d} unfinished={unfinished:5d} "
                   f"preempt={m['preemption_count']:5d} ttft_p99={m['ttft_p99_ms']:9,.0f} "

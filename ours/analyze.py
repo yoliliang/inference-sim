@@ -19,6 +19,7 @@ Outputs, all inside the experiment folder:
 Re-runnable: python ours/analyze.py ours/experiments/<folder>
 """
 import glob
+import gzip
 import json
 import math
 import os
@@ -34,7 +35,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 TYPES = ["type1", "type2", "type3"]
 TYPE_COLORS = {"type1": "#2a78d6", "type2": "#eb6834", "type3": "#1baf7a", "all": "#333333"}
 INST_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300"]
-RUN_RE = re.compile(r"rate([0-9.]+)_s(\d+)\.json$")
+RUN_RE = re.compile(r"rate([0-9.]+)_s(\d+)\.json(\.gz)?$")
 PREEMPT_RE = re.compile(r"\[tick (\d+)\] preemption: evicting (request_\d+)")
 
 # two-sided 97.5 percent Student t critical values by degrees of freedom
@@ -50,8 +51,16 @@ def t_crit(n):
     return T975.get(n - 1, 1.96)
 
 
+def _open_json(path):
+    return gzip.open(path, "rt", encoding="utf-8") if path.endswith(".gz") else open(path)
+
+
+def _stem(path):
+    return path[:-8] if path.endswith(".json.gz") else path[:-5]
+
+
 def load_run(path):
-    m = json.load(open(path))
+    m = json.load(_open_json(path))
     df = pd.DataFrame(m["requests"])
     if "status" not in df:
         df["status"] = np.where(df["e2e_ms"] > 0, "completed", "unfinished")
@@ -59,7 +68,7 @@ def load_run(path):
         if c not in df:
             df[c] = 0
         df[c] = df[c].fillna(0)
-    state_path = path[:-5] + "_state.csv"
+    state_path = _stem(path) + "_state.csv"
     state = pd.read_csv(state_path) if os.path.exists(state_path) else None
     if state is not None:
         state["t_s"] = state["clock_us"] / 1e6
@@ -69,7 +78,7 @@ def load_run(path):
 def load_preemptions(json_path, df):
     """Preemption events (time, tenant type) from the BLIS log next to the json.
     BLIS logs one warning per eviction at its default log level."""
-    log_path = json_path[:-5] + ".log"
+    log_path = _stem(json_path) + ".log"
     if not os.path.exists(log_path):
         return None
     tenant = dict(zip(df.requestID, df.tenant_id))
@@ -292,7 +301,8 @@ def sweep_plot(summary, out_png, title):
 def analyze_experiment(exp):
     manifest = json.load(open(os.path.join(exp, "manifest.json")))
     rows = []
-    for path in sorted(glob.glob(os.path.join(exp, "runs", "rate*_s*.json"))):
+    for path in sorted(glob.glob(os.path.join(exp, "runs", "rate*_s*.json")) +
+                       glob.glob(os.path.join(exp, "runs", "rate*_s*.json.gz"))):
         mt = RUN_RE.search(os.path.basename(path))
         if not mt:
             continue
@@ -300,7 +310,7 @@ def analyze_experiment(exp):
         m, df, state = load_run(path)
         warm, end = window_bounds(manifest, m)
         rows.extend(run_rows(df, warm, end, rate, seed))
-        tag = os.path.basename(path)[:-5]
+        tag = os.path.basename(_stem(path))
         panel_plot(df, state, load_preemptions(path, df), warm, end,
                    os.path.join(exp, "runs", tag + "_panel.png"),
                    f"{os.path.basename(exp)}    rate {rate:g}    seed {seed}")
