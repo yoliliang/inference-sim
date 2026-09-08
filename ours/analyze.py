@@ -144,24 +144,37 @@ def _shade(ax, warm, end):
     ax.axvline(end, color="#999", ls="--", lw=1)
 
 
+def _kde(x, grid):
+    """Gaussian kernel density with Scott's bandwidth, evaluated on grid."""
+    n = len(x)
+    h = 1.06 * min(x.std(ddof=1), (np.percentile(x, 75) - np.percentile(x, 25)) / 1.34 or x.std(ddof=1)) * n ** (-0.2)
+    h = max(h, 1e-6)
+    z = (grid[:, None] - x[None, :]) / h
+    return np.exp(-0.5 * z * z).sum(axis=1) / (n * h * math.sqrt(2 * math.pi))
+
+
 def _density(ax, df, col, xlabel):
-    """Per-type density of a latency on a log axis (histogram outline, log-spaced bins)."""
+    """Per-type smooth density of log10(latency), x shown in ms on a log axis.
+    The x range is cut to the 0.5 to 99.5 percentiles so the bulk of the mass fills the panel."""
     done = df[df.status == "completed"]
     x_all = done[col].values
     x_all = x_all[x_all > 0]
-    if len(x_all) == 0:
+    if len(x_all) < 5:
         _blank(ax, "no completed requests in window")
         return
-    bins = np.logspace(np.log10(x_all.min()), np.log10(x_all.max()), 40)
+    lo, hi = np.percentile(np.log10(x_all), [0.5, 99.5])
+    grid = np.linspace(lo, hi, 400)
     for t in TYPES:
         x = done.loc[done.tenant_id == t, col].values
-        x = x[x > 0]
-        if len(x) == 0:
+        x = np.log10(x[x > 0])
+        if len(x) < 5:
             continue
-        ax.hist(x, bins=bins, density=True, histtype="step", lw=2, color=TYPE_COLORS[t], label=t)
+        ax.plot(10 ** grid, _kde(x, grid), lw=2, color=TYPE_COLORS[t], label=t)
     ax.set_xscale("log")
+    ax.set_xlim(10 ** lo, 10 ** hi)
     ax.set_xlabel(xlabel)
-    ax.set_ylabel("density (completed requests)")
+    ax.set_ylabel("density of log10 latency")
+    ax.ticklabel_format(axis="y", style="sci", scilimits=(-2, 2), useMathText=True)
     ax.legend(frameon=False, fontsize=8)
 
 
@@ -227,11 +240,13 @@ def panel_plot(df, state, preempt, warm, end, out_png, title):
     else:
         edges = np.arange(0, math.ceil(preempt.t_s.max()) + 2, 1.0)
         mids = edges[:-1] + 0.5
+        bottom = np.zeros(len(mids))
         for t in TYPES:
             cnt, _ = np.histogram(preempt.loc[preempt.tenant_id == t, "t_s"], bins=edges)
-            ax.plot(mids, cnt, lw=1.5, color=TYPE_COLORS[t], label=t)
+            ax.bar(mids, cnt, width=1.0, bottom=bottom, color=TYPE_COLORS[t], label=t, linewidth=0)
+            bottom += cnt
         ax.set_xlabel("simulated time, s")
-        ax.set_ylabel("preemptions per second, by type of evicted request")
+        ax.set_ylabel("preemptions per second (by type of evicted request)")
         _shade(ax, warm, end)
         ax.legend(frameon=False, fontsize=8)
 
@@ -288,8 +303,7 @@ def analyze_experiment(exp):
         tag = os.path.basename(path)[:-5]
         panel_plot(df, state, load_preemptions(path, df), warm, end,
                    os.path.join(exp, "runs", tag + "_panel.png"),
-                   f"{os.path.basename(exp)} / {tag}   "
-                   f"(one sample path: total Poisson rate {rate:g} req/s, seed {seed})")
+                   f"{os.path.basename(exp)}    rate {rate:g}    seed {seed}")
     if not rows:
         print("analyze: no runs found")
         return
