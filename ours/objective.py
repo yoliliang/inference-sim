@@ -75,17 +75,17 @@ def main():
     horizon = float(manifest["horizon_s"]) if manifest.get("horizon_s") else None
 
     rows = []
-    paths = sorted(glob.glob(os.path.join(a.exp, "runs", "rate*_s*.json")) +
-                   glob.glob(os.path.join(a.exp, "runs", "rate*_s*.json.gz")))
+    paths = sorted(glob.glob(os.path.join(a.exp, "runs", "*_s*.json")) +
+                   glob.glob(os.path.join(a.exp, "runs", "*_s*.json.gz")))
     for path in paths:
-        mt = analyze.RUN_RE.search(os.path.basename(path))
-        if not mt:
+        parsed = analyze.parse_tag(os.path.basename(path), manifest)
+        if not parsed:
             continue
-        rate, seed = float(mt.group(1)), int(mt.group(2))
+        n, rate, seed = parsed
         m, df, _ = analyze.load_run(path)
         warm, end = analyze.window_bounds(manifest, m)
         for r in run_value(df, params, warm, end, horizon or m["vllm_estimated_duration_s"]):
-            r.update({"rate": rate, "seed": seed})
+            r.update({"n": n, "rate": rate, "seed": seed})
             rows.append(r)
     if not rows:
         sys.exit("no runs found")
@@ -93,14 +93,14 @@ def main():
     runs.to_csv(os.path.join(a.exp, "objective_runs.csv"), index=False)
 
     out = []
-    for (rate, t), g in runs.groupby(["rate", "type"]):
-        row = {"rate": rate, "type": t, "n_seeds": len(g)}
+    for (n, rate, t), g in runs.groupby(["n", "rate", "type"]):
+        row = {"n": n, "rate": rate, "type": t, "n_seeds": len(g)}
         for col in ("value_per_s", "reward_per_s", "cost_per_s", "cost_unfinished_per_s"):
             x = g[col]
             row[col + "_mean"] = x.mean()
             row[col + "_ci95"] = analyze.t_crit(len(x)) * x.std(ddof=1) / math.sqrt(len(x)) if len(x) >= 2 else np.nan
         out.append(row)
-    summary = pd.DataFrame(out).sort_values(["type", "rate"])
+    summary = pd.DataFrame(out).sort_values(["type", "n", "rate"])
     summary.to_csv(os.path.join(a.exp, "objective.csv"), index=False)
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.5), dpi=130)
@@ -121,7 +121,12 @@ def main():
     fig.tight_layout()
     fig.savefig(os.path.join(a.exp, "objective.png"))
 
-    show = ["rate", "type", "n_seeds", "value_per_s_mean", "value_per_s_ci95", "reward_per_s_mean",
+    if manifest.get("experiment") == "scaling" and summary.n.nunique() > 1:
+        analyze.scaling_plot(pd.read_csv(os.path.join(a.exp, "summary.csv")), os.path.join(a.exp, "scaling_panel.png"),
+                             os.path.join(a.exp, "scaling_fits.csv"),
+                             f"{os.path.basename(a.exp)}: per-instance metrics and objective against n",
+                             extra=summary[summary["type"] == "all"])
+    show = ["n", "rate", "type", "n_seeds", "value_per_s_mean", "value_per_s_ci95", "reward_per_s_mean",
             "cost_per_s_mean", "cost_unfinished_per_s_mean"]
     with pd.option_context("display.width", 200, "display.float_format", "{:,.1f}".format):
         print(summary[show].to_string(index=False))

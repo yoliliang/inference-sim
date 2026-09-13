@@ -42,7 +42,6 @@ import analyze  # noqa: E402
 
 BASE_FLAGS = [
     "--model", "qwen/qwen3-14b", "--hardware", "H100", "--tp", "1",
-    "--num-instances", "4",
 ]
 
 # Configuration profiles (notes/benchmark-brief.md section 1). Each profile fixes the
@@ -96,7 +95,10 @@ def write_spec(src, dst, rate, num_requests):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("name")
-    ap.add_argument("--rates", required=True, help="comma list, req/s")
+    ap.add_argument("--rates", default=None, help="rate experiment: comma list of total arrival rates, req/s")
+    ap.add_argument("--instances", default="4", help="comma list of instance counts n (rate experiment: one value)")
+    ap.add_argument("--rate-per-instance", type=float, default=None,
+                    help="scaling experiment: total rate = n x this for every n in --instances; folder is <date>_scaling_<name>")
     ap.add_argument("--seeds", default="1", help="comma list")
     ap.add_argument("--blocks", type=int, default=2500, help="--total-kv-blocks per instance")
     ap.add_argument("--horizon-s", type=float, default=None,
@@ -124,13 +126,24 @@ def main():
     ap.add_argument("extra", nargs="*", help="extra BLIS flags after --")
     a = ap.parse_args()
 
-    rates = [float(x) for x in a.rates.split(",")]
+    instances = [int(x) for x in a.instances.split(",")]
     seeds = [int(x) for x in a.seeds.split(",")]
+    scaling = a.rate_per_instance is not None
+    if scaling:
+        points = [(n, n * a.rate_per_instance, f"n{n}") for n in instances]  # (instances, total rate, tag prefix)
+        rates = [pt[1] for pt in points]
+    else:
+        if not a.rates:
+            sys.exit("give --rates (rate experiment) or --rate-per-instance (scaling experiment)")
+        if len(instances) != 1:
+            sys.exit("a rate experiment uses one instance count; give --rate-per-instance for a scaling experiment")
+        rates = [float(x) for x in a.rates.split(",")]
+        points = [(instances[0], r, f"rate{r:g}") for r in rates]
     fixed = a.horizon_s is not None
     if fixed and a.warmup_s + a.tail_s >= a.horizon_s:
         sys.exit("warmup-s + tail-s must be smaller than horizon-s")
     date = dt.date.today().isoformat()
-    exp = os.path.join(HERE, "experiments", f"{date}_{a.name}")
+    exp = os.path.join(HERE, "experiments", f"{date}_scaling_{a.name}" if scaling else f"{date}_{a.name}")
     for d in ("specs", "runs"):
         os.makedirs(os.path.join(exp, d), exist_ok=True)
 
@@ -142,6 +155,8 @@ def main():
 
     manifest = {
         "name": a.name, "date": date, "commit": git_commit(), "binary": BIN,
+        "experiment": "scaling" if scaling else "rate",
+        "instances": instances, "rate_per_instance": a.rate_per_instance,
         "mode": "fixed-horizon" if fixed else "drain",
         "horizon_s": a.horizon_s, "num_requests": None if fixed else a.num_requests,
         "warmup_s": a.warmup_s, "tail_s": a.tail_s,
@@ -175,15 +190,14 @@ def main():
                            f"e2e_mean={m['e2e_mean_ms']:8,.0f} tok/s={m['tokens_per_sec']:6,.0f}  (raw BLIS, untrimmed)")
 
     jobs, n_ok = [], 0
-    for rate in rates:
-        rtag = f"rate{rate:g}"
+    for n_inst, rate, rtag in points:
         spec = os.path.join(exp, "specs", f"{rtag}.yaml")
         write_spec(a.spec, spec, rate, 0 if fixed else a.num_requests)
         for seed in seeds:
             tag = f"{rtag}_s{seed}"
             out = os.path.join(exp, "runs", tag + ".json")
             log = os.path.join(exp, "runs", tag + ".log")
-            cmd = [BIN, "run", *BASE_FLAGS, *PROFILES[a.profile], *mode_flags,
+            cmd = [BIN, "run", *BASE_FLAGS, "--num-instances", str(n_inst), *PROFILES[a.profile], *mode_flags,
                    "--workload-spec", spec,
                    "--total-kv-blocks", str(a.blocks),
                    "--seed", str(seed),

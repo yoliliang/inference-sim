@@ -71,3 +71,14 @@ row comes first.
 At low load: ITL mean 10 to 20 ms, TTFT for short prompts under 100 ms;
 `dropped_unservable` and `length_capped_requests` zero. A run off by more than 2x is a
 configuration error, not a result.
+
+## 6. Scaling experiments
+
+A scaling experiment is its own experiment type: folder `<date>_scaling_<name>`, one set
+of sample paths per system size n, run by `python ours/sweep.py <name> --instances 1,2,4,8,16
+--rate-per-instance R ...`. Total rate is n x R at every n; profile, memory per instance,
+types, horizon and window are identical across n (notes/scaling-definition.md). Runs are
+tagged `n<N>_s<S>`. The deliverable is metrics in scale: every per-instance quantity
+(throughput, evictions, objective value) and every latency quantity plotted against n on a
+log2 axis with a least-squares power-law fit n^b (scaling_panel.png, scaling_fits.csv), and
+the report states the exponents. K = 5 seeds per n is the working value for scaling runs.

@@ -35,7 +35,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 TYPES = ["type1", "type2", "type3"]
 TYPE_COLORS = {"type1": "#2a78d6", "type2": "#eb6834", "type3": "#1baf7a", "all": "#333333"}
 INST_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300"]
-RUN_RE = re.compile(r"rate([0-9.]+)_s(\d+)\.json(\.gz)?$")
+RUN_RE = re.compile(r"(?:rate([0-9.]+)|n([0-9]+))_s([0-9]+)[.]json([.]gz)?$")  # rate experiment or scaling experiment tag
 PREEMPT_RE = re.compile(r"\[tick (\d+)\] preemption: evicting (request_\d+)")
 
 # two-sided 97.5 percent Student t critical values by degrees of freedom
@@ -119,29 +119,44 @@ def group_metrics(g, window_len):
     return row
 
 
-def run_rows(df, warm, end, rate, seed):
+def parse_tag(basename, manifest):
+    """(n instances, total rate, seed) from a run file name and the manifest."""
+    mt = RUN_RE.search(basename)
+    if not mt:
+        return None
+    seed = int(mt.group(3))
+    if mt.group(1) is not None:
+        rate = float(mt.group(1))
+        n = int((manifest.get("instances") or [4])[0])
+    else:
+        n = int(mt.group(2))
+        rate = n * float(manifest.get("rate_per_instance") or 0)
+    return n, rate, seed
+
+
+def run_rows(df, warm, end, rate, seed, n=4):
     w = df[(df.arrived_at >= warm) & (df.arrived_at < end)]
     rows = []
     for t in TYPES + ["all"]:
         g = w if t == "all" else w[w.tenant_id == t]
-        row = {"rate": rate, "seed": seed, "type": t, "window_s": end - warm}
+        row = {"n": n, "rate": rate, "seed": seed, "type": t, "window_s": end - warm}
         row.update(group_metrics(g, end - warm))
         rows.append(row)
     return rows
 
 
 def summarize(runs_df):
-    metrics = [c for c in runs_df.columns if c not in ("rate", "seed", "type", "window_s")]
+    metrics = [c for c in runs_df.columns if c not in ("n", "rate", "seed", "type", "window_s")]
     out = []
-    for (rate, t), g in runs_df.groupby(["rate", "type"]):
-        row = {"rate": rate, "type": t, "n_seeds": len(g)}
+    for (n, rate, t), g in runs_df.groupby(["n", "rate", "type"]):
+        row = {"n": n, "rate": rate, "type": t, "n_seeds": len(g)}
         for mcol in metrics:
             x = g[mcol].dropna()
             row[f"{mcol}_mean"] = x.mean() if len(x) else np.nan
             row[f"{mcol}_ci95"] = (t_crit(len(x)) * x.std(ddof=1) / math.sqrt(len(x))
                                    if len(x) >= 2 else np.nan)
         out.append(row)
-    return pd.DataFrame(out).sort_values(["type", "rate"])
+    return pd.DataFrame(out).sort_values(["type", "n", "rate"])
 
 
 def _blank(ax, msg):
@@ -300,22 +315,87 @@ def sweep_plot(summary, out_png, title):
     plt.close(fig)
 
 
+def powerlaw_fit(x, y):
+    """Least-squares fit of log y = a + b log x over points with x, y > 0; returns (b, a, n_points)."""
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    ok = (x > 0) & (y > 0) & np.isfinite(y)
+    if ok.sum() < 2:
+        return np.nan, np.nan, int(ok.sum())
+    b, a = np.polyfit(np.log(x[ok]), np.log(y[ok]), 1)
+    return b, a, int(ok.sum())
+
+
+SCALING_METRICS = [  # (column, label, divide by n)
+    ("delay_mean_ms", "mean queue wait, ms", False),
+    ("ttft_p99_ms", "time to first token p99, ms", False),
+    ("unfinished_frac", "unfinished at horizon, fraction", False),
+    ("preempt_per_s", "evictions per second per instance", True),
+    ("output_tok_per_s", "output tokens per second per instance", True),
+    ("wasted_tok_per_arrival", "wasted tokens per arrival", False),
+]
+
+
+def scaling_plot(summary, out_png, out_csv, title, extra=None):
+    """Per-instance metrics against n with a power-law fit n^b on the type all means.
+    extra: optional DataFrame (objective summary, type all) with n, value_per_s_mean, value_per_s_ci95."""
+    metrics = list(SCALING_METRICS)
+    if extra is not None:
+        metrics.append(("value_per_s", "objective value per second per instance", True))
+    fits = []
+    ncol = 3
+    nrow = int(math.ceil(len(metrics) / ncol))
+    fig, axes = plt.subplots(nrow, ncol, figsize=(5 * ncol, 4 * nrow), dpi=130)
+    for ax, (m, label, per_n) in zip(axes.flat, metrics):
+        src = extra if m == "value_per_s" else summary
+        for t in (["all"] if m == "value_per_s" else TYPES + ["all"]):
+            s = src[src["type"] == t].sort_values("n")
+            if s.empty or f"{m}_mean" not in s:
+                continue
+            k = 1.0 / s["n"] if per_n else 1.0
+            y, e = k * s[f"{m}_mean"], k * s[f"{m}_ci95"]
+            ax.errorbar(s["n"], y, yerr=e, marker="o", ms=4, lw=1.5, capsize=3, color=TYPE_COLORS[t], label=t)
+            if t == "all":
+                b, a0, npts = powerlaw_fit(s["n"], y)
+                fits.append({"metric": m, "per_instance": per_n, "exponent": b, "intercept_log": a0, "points": npts})
+                if np.isfinite(b):
+                    xx = np.linspace(s["n"].min(), s["n"].max(), 50)
+                    ax.plot(xx, np.exp(a0) * xx ** b, ls="--", color="#333", lw=1, label=f"fit n^{b:.2f}")
+        ax.set_xscale("log", base=2)
+        if m not in ("unfinished_frac", "value_per_s"):
+            ax.set_yscale("log")
+        ax.set_xlabel("instances n (total rate = n x rate per instance)")
+        ax.set_ylabel(label)
+        ax.grid(True, color="#e5e5e5", lw=0.8)
+        ax.legend(frameon=False, fontsize=7)
+        for sp in ("top", "right"):
+            ax.spines[sp].set_visible(False)
+    for ax in list(axes.flat)[len(metrics):]:
+        ax.axis("off")
+    fig.suptitle(title, fontsize=11)
+    fig.tight_layout()
+    fig.savefig(out_png)
+    plt.close(fig)
+    pd.DataFrame(fits).to_csv(out_csv, index=False)
+    return pd.DataFrame(fits)
+
+
 def analyze_experiment(exp):
     manifest = json.load(open(os.path.join(exp, "manifest.json")))
     rows = []
-    for path in sorted(glob.glob(os.path.join(exp, "runs", "rate*_s*.json")) +
-                       glob.glob(os.path.join(exp, "runs", "rate*_s*.json.gz"))):
-        mt = RUN_RE.search(os.path.basename(path))
-        if not mt:
+    scaling = manifest.get("experiment") == "scaling"
+    for path in sorted(glob.glob(os.path.join(exp, "runs", "*_s*.json")) +
+                       glob.glob(os.path.join(exp, "runs", "*_s*.json.gz"))):
+        parsed = parse_tag(os.path.basename(path), manifest)
+        if not parsed:
             continue
-        rate, seed = float(mt.group(1)), int(mt.group(2))
+        n, rate, seed = parsed
         m, df, state = load_run(path)
         warm, end = window_bounds(manifest, m)
-        rows.extend(run_rows(df, warm, end, rate, seed))
+        rows.extend(run_rows(df, warm, end, rate, seed, n))
         tag = os.path.basename(_stem(path))
         panel_plot(df, state, load_preemptions(path, df), warm, end,
                    os.path.join(exp, "runs", tag + "_panel.png"),
-                   f"{os.path.basename(exp)}    rate {rate:g}    seed {seed}")
+                   f"{os.path.basename(exp)}    " + (f"n {n}    rate {rate:g}" if scaling else f"rate {rate:g}") + f"    seed {seed}")
     if not rows:
         print("analyze: no runs found")
         return
@@ -323,11 +403,15 @@ def analyze_experiment(exp):
     runs_df.to_csv(os.path.join(exp, "summary_runs.csv"), index=False)
     summary = summarize(runs_df)
     summary.to_csv(os.path.join(exp, "summary.csv"), index=False)
-    if summary.rate.nunique() > 1:
+    if scaling and summary.n.nunique() > 1:
+        fits = scaling_plot(summary, os.path.join(exp, "scaling_panel.png"), os.path.join(exp, "scaling_fits.csv"),
+                            f"{os.path.basename(exp)}: per-instance metrics against n, {summary.n_seeds.max()} seeds, 95 percent CI")
+        print(fits.to_string(index=False))
+    elif summary.rate.nunique() > 1:
         sweep_plot(summary, os.path.join(exp, "sweep_panel.png"),
                    f"{os.path.basename(exp)}: steady-state window, "
                    f"{summary.n_seeds.max()} seeds, 95 percent CI")
-    show = ["rate", "type", "n_seeds", "arrived_mean", "unfinished_frac_mean", "rejected_frac_mean",
+    show = ["n", "rate", "type", "n_seeds", "arrived_mean", "unfinished_frac_mean", "rejected_frac_mean",
             "delay_mean_ms_mean", "delay_mean_ms_ci95", "ttft_p99_ms_mean", "e2e_mean_ms_mean",
             "preempt_per_arrival_mean"]
     with pd.option_context("display.width", 200, "display.float_format", "{:,.2f}".format):
