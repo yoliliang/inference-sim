@@ -57,7 +57,7 @@ row comes first.
 
 1. State the question in one sentence (`--question`); it becomes section 1 of the PDF.
 2. Pick the profile, memory regime, grid, seeds, horizon and window from the table above.
-3. Run `python ours/sweep.py ...`. It writes the manifest, runs BLIS, gzips the json,
+3. Run `python ours/sweep.py ... --jobs N`. It writes the manifest, runs the sample paths N at a time (one BLIS process per path, default half the logical cores), gzips the json,
    runs analyze.py.
 4. If prices are set, run `python ours/objective.py <folder>`.
 5. Write the interpretation into README.md under a "## Interpretation" heading, then

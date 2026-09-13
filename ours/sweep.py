@@ -25,6 +25,7 @@ Extra BLIS flags go after "--", e.g.
     python ours/sweep.py x --rates 40 --seeds 1 --horizon-s 120 -- --scheduler fcfs
 """
 import argparse
+import concurrent.futures
 import datetime as dt
 import gzip
 import json
@@ -116,6 +117,8 @@ def main():
     ap.add_argument("--question", default="")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-analyze", action="store_true")
+    ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) // 2),
+                    help="sample paths to run concurrently, one BLIS process each (default: half the logical cores)")
     ap.add_argument("--resume", action="store_true",
                     help="skip runs whose .json.gz already exists (keeps the existing manifest)")
     ap.add_argument("extra", nargs="*", help="extra BLIS flags after --")
@@ -154,7 +157,24 @@ def main():
         with open(os.path.join(exp, "README.md"), "w") as f:
             f.write(f"# {a.name} ({date})\n\n{a.question or '(no question recorded)'}\n")
 
-    n_ok = 0
+    def run_one(job):
+        """Run one sample path in its own BLIS process; returns (tag, ok, summary line)."""
+        tag, cmd, out, log = job
+        with open(log, "w") as lf:
+            rc = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.DEVNULL, stderr=lf).returncode
+        if rc != 0 or not os.path.exists(out):
+            return tag, False, f"FAILED {tag} (rc={rc}), see {log}"
+        m = json.load(open(out))
+        # gzip the per-request json (about 350 bytes per request uncompressed)
+        with gzip.open(out + ".gz", "wt", encoding="utf-8") as gz:
+            json.dump(m, gz)
+        os.remove(out)
+        unfinished = m["still_queued"] + m["still_running"]
+        return tag, True, (f"{tag:<14} injected={m['injected_requests']:6d} unfinished={unfinished:5d} "
+                           f"preempt={m['preemption_count']:5d} ttft_p99={m['ttft_p99_ms']:9,.0f} "
+                           f"e2e_mean={m['e2e_mean_ms']:8,.0f} tok/s={m['tokens_per_sec']:6,.0f}  (raw BLIS, untrimmed)")
+
+    jobs, n_ok = [], 0
     for rate in rates:
         rtag = f"rate{rate:g}"
         spec = os.path.join(exp, "specs", f"{rtag}.yaml")
@@ -174,21 +194,14 @@ def main():
             if a.resume and os.path.exists(out + ".gz"):
                 n_ok += 1
                 continue
-            with open(log, "w") as lf:
-                rc = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.DEVNULL, stderr=lf).returncode
-            if rc != 0 or not os.path.exists(out):
-                print(f"FAILED {tag} (rc={rc}), see {log}")
-                continue
-            n_ok += 1
-            m = json.load(open(out))
-            # gzip the per-request json (about 350 bytes per request uncompressed)
-            with gzip.open(out + ".gz", "wt", encoding="utf-8") as gz:
-                json.dump(m, gz)
-            os.remove(out)
-            unfinished = m["still_queued"] + m["still_running"]
-            print(f"{tag:<14} injected={m['injected_requests']:6d} unfinished={unfinished:5d} "
-                  f"preempt={m['preemption_count']:5d} ttft_p99={m['ttft_p99_ms']:9,.0f} "
-                  f"e2e_mean={m['e2e_mean_ms']:8,.0f} tok/s={m['tokens_per_sec']:6,.0f}  (raw BLIS, untrimmed)")
+            jobs.append((tag, cmd, out, log))
+
+    if jobs:
+        print(f"{len(jobs)} sample paths, {a.jobs} at a time", flush=True)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, a.jobs)) as pool:
+            for tag, ok, line in pool.map(run_one, jobs):
+                print(line, flush=True)
+                n_ok += ok
 
     if a.dry_run:
         return
