@@ -2784,6 +2784,13 @@ var runCmd = &cobra.Command{
 			}
 		}
 
+		// ours: window block and optional omission of the per-request array
+		aggregated.WindowStartS, aggregated.WindowEndS = windowStartS, windowEndS
+		aggregated.HorizonS = float64(aggregated.SimEndedTime) / 1e6
+		if simulationHorizon != math.MaxInt64 {
+			aggregated.HorizonS = float64(simulationHorizon) / 1e6
+		}
+		aggregated.DropPerRequest = dropPerRequestOutput
 		if err := aggregated.EmitOutput(clusterOutput, metricsPath); err != nil {
 			logrus.Fatalf("SaveResults: %v", err)
 		}
@@ -3110,6 +3117,9 @@ func init() {
 	runCmd.Flags().StringVar(&traceOutput, "trace-output", "", "Export workload as TraceV2 files (<prefix>.yaml + <prefix>.csv)")
 	runCmd.Flags().Int64Var(&stateSampleInterval, "state-sample-interval", 0, "ours: write one CSV row per instance every N microseconds of simulated time (0 = off)")
 	runCmd.Flags().StringVar(&stateSamplePath, "state-sample-path", "", "ours: CSV path for --state-sample-interval (default: <metrics-path>_state.csv)")
+	runCmd.Flags().Float64Var(&windowStartS, "window-start", 0, "ours: steady-state window start in seconds of simulated time (requests are selected by arrival time)")
+	runCmd.Flags().Float64Var(&windowEndS, "window-end", 0, "ours: steady-state window end in seconds; when > 0 the metrics file gains a window block with per-type sufficient statistics and quantiles")
+	runCmd.Flags().BoolVar(&dropPerRequestOutput, "drop-per-request-output", false, "ours: omit the per-request array from the metrics file (the window block carries the statistics)")
 	runCmd.Flags().Int64Var(&stateSnapshotInterval, "state-snapshot-interval", 0, "ours: write the per-request composition of every instance's queue and batch every N microseconds to <metrics-path>_snapshot.csv (0 = off; a multiple of --state-sample-interval when both are set)")
 	runCmd.Flags().StringVar(&metricsPath, "metrics-path", "", "File to write MetricsOutput JSON (aggregate P50/P95/P99 TTFT, E2E, throughput stats). Use --results-path on blis replay for per-request SimResult JSON.")
 

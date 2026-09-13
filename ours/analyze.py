@@ -134,6 +134,33 @@ def parse_tag(basename, manifest):
     return n, rate, seed
 
 
+def window_rows(win, rate, seed, n):
+    """Per-type rows from the metrics file's window block (sufficient statistics computed
+    by BLIS at the end of the run); same columns as run_rows."""
+    L = win["end_s"] - win["start_s"]
+    rows = []
+    for t in TYPES + ["all"]:
+        s = win["types"].get(t)
+        if s is None:
+            continue
+        a = s["arrived"]
+        rows.append({
+            "n": n, "rate": rate, "seed": seed, "type": t, "window_s": L,
+            "arrived": a, "completed": s["completed"],
+            "unfinished_frac": s["unfinished"] / a if a else np.nan,
+            "rejected_frac": s["rejected"] / a if a else np.nan,
+            "preempt_per_arrival": s["sum_preemptions"] / a if a else np.nan,
+            "preempt_per_completed": s["sum_preemptions"] / s["completed"] if s["completed"] else np.nan,
+            "preempt_per_s": s["sum_preemptions"] / L if L > 0 else np.nan,
+            "wasted_tok_per_arrival": s["sum_wasted_tokens"] / a if a else np.nan,
+            "output_tok_per_s": s["sum_output_tokens"] / L if L > 0 else np.nan,
+            "ttft_mean_ms": s["ttft"]["mean_ms"], "ttft_p50_ms": s["ttft"]["p50_ms"], "ttft_p99_ms": s["ttft"]["p99_ms"],
+            "e2e_mean_ms": s["e2e"]["mean_ms"], "e2e_p50_ms": s["e2e"]["p50_ms"], "e2e_p99_ms": s["e2e"]["p99_ms"],
+            "delay_mean_ms": s["wait"]["mean_ms"], "delay_p50_ms": s["wait"]["p50_ms"], "delay_p99_ms": s["wait"]["p99_ms"],
+        })
+    return rows
+
+
 def run_rows(df, warm, end, rate, seed, n=4):
     w = df[(df.arrived_at >= warm) & (df.arrived_at < end)]
     rows = []
@@ -394,9 +421,15 @@ def analyze_experiment(exp, all_panels=False):
         if not parsed:
             continue
         n, rate, seed = parsed
-        m, df, state = load_run(path)
+        m = json.load(_open_json(path))
         warm, end = window_bounds(manifest, m)
-        rows.extend(run_rows(df, warm, end, rate, seed, n))
+        if "window" in m:
+            rows.extend(window_rows(m["window"], rate, seed, n))
+        if not m.get("requests"):
+            continue  # no path data kept for this seed: statistics came from the window block
+        _, df, state = load_run(path)
+        if "window" not in m:
+            rows.extend(run_rows(df, warm, end, rate, seed, n))
         tag = os.path.basename(_stem(path))
         if not all_panels and seed != first_seed:
             continue

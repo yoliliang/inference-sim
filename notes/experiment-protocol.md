@@ -14,7 +14,7 @@ House style: no em dashes or en dashes.
 |---|---|
 | `manifest.json` | machine record: fork commit, profile, every BLIS flag, rate grid, seeds, horizon, warm-up, tail, sampling intervals, spec template |
 | `specs/rate<R>.yaml` | the exact workload file BLIS read for that rate |
-| `runs/rate<R>_s<S>.json.gz`, `.log`, `_state.csv`, `_snapshot.csv`, `_panel.png` | raw output per sample path, plus its six-panel figure |
+| `runs/rate<R>_s<S>.json.gz`, `.log` | per sample path: BLIS aggregates plus the `window` block (per-type sums and quantiles over the steady-state window, about 1 KB). Path data (the per-request array, `_state.csv`, `_snapshot.csv`, `_panel.png`) is written only when asked: `--keep-paths first` keeps it for the first seed of each point, `--state-sample-ms` and `--state-snapshot-s` switch on the time series |
 | `summary_runs.csv`, `summary.csv` | per-path window metrics; across-seed mean and CI |
 | `objective_runs.csv`, `objective.csv`, `objective.png` | revenue management objective (once prices are set) |
 | `README.md` | text only: the question (before the first "##") and the interpretation (after) |
@@ -43,8 +43,9 @@ row comes first.
 
 - Unit of observation: one sample path (one seed). Every statistic is computed per path
   first; per-request records within a path are not treated as independent.
-- Steady-state window: requests arriving in [W, T - D). Latency statistics use completed
-  window requests. Unfinished-at-horizon requests are counted (fraction), never timed.
+- Steady-state window: requests arriving in [W, T - D), computed by BLIS itself at the end
+  of the run (`--window-start`, `--window-end`, the `window` block) so no per-request data
+  has to be stored. Latency statistics use completed window requests. Unfinished-at-horizon requests are counted (fraction), never timed.
   Rejected requests are counted per type.
 - Reported per path and type: mean, p50, p99 of TTFT, E2E and queue wait; unfinished and
   rejected fractions; preemptions and wasted tokens per arrival; output tokens per second.

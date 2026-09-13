@@ -11,7 +11,10 @@ Branch: ours
 - sim/simulator.go: NewSimulator calls NewBatchFormationStrategy(cfg.BatchFormation, cfg.PreemptionPolicy) instead of NewBatchFormation
 - cmd/root.go: +--batch-formation flag (default vllm), validation, passed via WithBatchFormation; +--state-sample-interval / --state-sample-path flags and the ProgressHook wiring around cs.Run (see cmd/state_sample.go)
 - sim/metrics_utils.go: +3 omitempty fields on RequestMetrics (preemption_count, wasted_tokens, status); file-only, never on stdout
-- sim/metrics.go: +Metrics.ExtraRequests; EmitOutput sets Status (completed / unfinished) and appends ExtraRequests before the arrival sort; a --metrics-path ending in .gz is written gzip-compressed
+- sim/metrics.go: +Metrics.ExtraRequests; EmitOutput sets Status (completed / unfinished) and appends ExtraRequests before the arrival sort; a --metrics-path ending in .gz is written gzip-compressed; +WindowStartS / WindowEndS / HorizonS / DropPerRequest fields, EmitOutput adds the window block and can omit the per-request array
+- sim/metrics_utils.go (second item): +MetricsOutput.Window (file-only)
+- sim/window_stats.go (added): per-type steady-state window statistics computed in memory at the end of a run (sufficient statistics of the objective plus exact TTFT / E2E / wait quantiles)
+- cmd/state_sample.go, cmd/root.go (second item): +--window-start, --window-end, --drop-per-request-output
 - sim/batch_formation.go: +PreemptedRequest.WastedTokens, set from ProgressIndex at eviction in preemptForTokens
 - sim/simulator.go: per-request PreemptionCount / WastedTokens accumulated where Metrics.PreemptionCount is incremented
 - sim/cluster/cluster.go: +rejectedRequestMetrics on ClusterSimulator; aggregateMetrics copies it into merged.ExtraRequests

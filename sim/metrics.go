@@ -51,6 +51,12 @@ type Metrics struct {
 	// ours: requests that never reached an instance (admission rejections) but
 	// should still appear in the file-only Requests[] array. Not aggregated anywhere else.
 	ExtraRequests []RequestMetrics
+	// ours: steady-state window configuration for the file-only window block. WindowEndS
+	// 0 = no block. DropPerRequest omits the per-request array from the file.
+	WindowStartS   float64
+	WindowEndS     float64
+	HorizonS       float64
+	DropPerRequest bool
 
 	// Per-adapter resident-set event counts (LoRA control-plane subsystem).
 	// AdapterLoadCounts[id] is
@@ -279,10 +285,21 @@ func (m *Metrics) EmitOutput(output MetricsOutput, outputFilePath string) error 
 		hitRate := m.CacheHitRate
 		output.CacheHitRate = &hitRate
 
+		// ours: steady-state window block computed in memory (see window_stats.go)
+		if m.WindowEndS > 0 {
+			output.Window = m.WindowStats(m.WindowStartS, m.WindowEndS, m.HorizonS)
+		}
+
 		// request-level metrics for detailed output in file
 		// Iterate over all registered requests (not just completed prefill)
 		// so incomplete requests appear with zero-valued metrics.
+		if m.DropPerRequest { // ours: sufficient statistics are in the window block
+			output.Requests = nil
+		}
 		for _, id := range sortedRequestIDs(m.Requests) {
+			if m.DropPerRequest {
+				break
+			}
 			detail := m.Requests[id]
 			detail.TTFT = m.RequestTTFTs[id] / 1e3                               // zero if not in map
 			detail.E2E = m.RequestE2Es[id] / 1e3                                 // zero if not in map
@@ -295,7 +312,9 @@ func (m *Metrics) EmitOutput(output MetricsOutput, outputFilePath string) error 
 			}
 			output.Requests = append(output.Requests, detail)
 		}
-		output.Requests = append(output.Requests, m.ExtraRequests...) // ours: admission rejections, sorted below with the rest
+		if !m.DropPerRequest {
+			output.Requests = append(output.Requests, m.ExtraRequests...) // ours: admission rejections, sorted below with the rest
+		}
 
 		sort.Slice(output.Requests, func(i, j int) bool {
 			return output.Requests[i].ArrivedAt < output.Requests[j].ArrivedAt

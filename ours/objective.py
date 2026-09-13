@@ -36,6 +36,32 @@ TYPES = analyze.TYPES
 COLORS = analyze.TYPE_COLORS
 
 
+def window_value(win, params):
+    """Objective from the window block's per-type sums (no per-request data needed)."""
+    L = win["end_s"] - win["start_s"]
+    rows = []
+    for t in TYPES:
+        p = params["types"][t]
+        s = win["types"].get(t, {})
+        reward = (p["pi_in"] * s.get("sum_input_tokens", 0) + p["pi_out"] * s.get("sum_output_tokens", 0)) / 1000.0
+        cost_done = p["h"] * s.get("sum_sojourn_s", 0.0)
+        cost_unf = p["h"] * s.get("sum_censored_s", 0.0)
+        rows.append({
+            "type": t, "arrived": s.get("arrived", 0), "completed": s.get("completed", 0),
+            "rejected": s.get("rejected", 0), "unfinished": s.get("unfinished", 0),
+            "reward_per_s": reward / L, "cost_per_s": (cost_done + cost_unf) / L,
+            "cost_unfinished_per_s": cost_unf / L,
+        })
+    tot = {"type": "all"}
+    for k in ("arrived", "completed", "rejected", "unfinished", "reward_per_s", "cost_per_s",
+              "cost_unfinished_per_s"):
+        tot[k] = sum(r[k] for r in rows)
+    rows.append(tot)
+    for r in rows:
+        r["value_per_s"] = r["reward_per_s"] - r["cost_per_s"]
+    return rows
+
+
 def run_value(df, params, warm, end, horizon):
     w = df[(df.arrived_at >= warm) & (df.arrived_at < end)]
     rows = []
@@ -82,9 +108,14 @@ def main():
         if not parsed:
             continue
         n, rate, seed = parsed
-        m, df, _ = analyze.load_run(path)
-        warm, end = analyze.window_bounds(manifest, m)
-        for r in run_value(df, params, warm, end, horizon or m["vllm_estimated_duration_s"]):
+        m = analyze.json.load(analyze._open_json(path))
+        if "window" in m:
+            vals = window_value(m["window"], params)
+        else:
+            _, df, _ = analyze.load_run(path)
+            warm, end = analyze.window_bounds(manifest, m)
+            vals = run_value(df, params, warm, end, horizon or m["vllm_estimated_duration_s"])
+        for r in vals:
             r.update({"n": n, "rate": rate, "seed": seed})
             rows.append(r)
     if not rows:

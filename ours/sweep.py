@@ -37,7 +37,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-BIN = os.path.join(ROOT, "blis.exe" if os.name == "nt" else "blis")
+BIN = os.environ.get("BLIS_BIN") or os.path.join(ROOT, "blis.exe" if os.name == "nt" else "blis")
 sys.path.insert(0, HERE)
 import analyze  # noqa: E402
 
@@ -114,6 +114,9 @@ def main():
                     help="write per-instance state every N ms of simulated time (0 = off)")
     ap.add_argument("--state-snapshot-s", type=float, default=0.0,
                     help="write the per-request queue and batch composition every N s (0 = off; multiple of state-sample-ms)")
+    ap.add_argument("--keep-paths", choices=["none", "first", "all"], default="none",
+                    help="write the per-request array (path data) for no seed, the first seed of each point, or all seeds; "
+                         "statistics come from the window block either way")
     ap.add_argument("--profile", choices=sorted(PROFILES), default="B1",
                     help="configuration profile, see PROFILES (default B1, llm-d production default)")
     ap.add_argument("--spec", default=os.path.join(HERE, "specs", "types3.yaml"))
@@ -149,6 +152,8 @@ def main():
         os.makedirs(os.path.join(exp, d), exist_ok=True)
 
     mode_flags = ["--horizon", str(int(round(a.horizon_s * 1e6)))] if fixed else []
+    if fixed:
+        mode_flags += ["--window-start", f"{a.warmup_s:g}", "--window-end", f"{a.horizon_s - a.tail_s:g}"]
     if a.state_sample_ms > 0:
         mode_flags += ["--state-sample-interval", str(a.state_sample_ms * 1000)]
     if a.state_snapshot_s > 0:
@@ -162,6 +167,7 @@ def main():
         "horizon_s": a.horizon_s, "num_requests": None if fixed else a.num_requests,
         "warmup_s": a.warmup_s, "tail_s": a.tail_s,
         "state_sample_ms": a.state_sample_ms, "state_snapshot_s": a.state_snapshot_s,
+        "keep_paths": a.keep_paths,
         "blocks": a.blocks, "profile": a.profile,
         "base_flags": BASE_FLAGS + PROFILES[a.profile] + mode_flags,
         "extra_flags": a.extra,
@@ -195,7 +201,9 @@ def main():
             tag = f"{rtag}_s{seed}"
             out = os.path.join(exp, "runs", tag + ".json.gz")  # written gzipped by BLIS
             log = os.path.join(exp, "runs", tag + ".log")
+            keep = a.keep_paths == "all" or (a.keep_paths == "first" and seed == seeds[0])
             cmd = [BIN, "run", *BASE_FLAGS, "--num-instances", str(n_inst), *PROFILES[a.profile], *mode_flags,
+                   *([] if keep else ["--drop-per-request-output"]),
                    "--workload-spec", spec,
                    "--total-kv-blocks", str(a.blocks),
                    "--seed", str(seed),

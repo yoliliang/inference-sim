@@ -99,6 +99,7 @@ type MetricsOutput struct {
 	LengthCappedRequests    int              `json:"length_capped_requests"`
 	TimedOutRequests        int              `json:"timed_out_requests"`
 	Requests                []RequestMetrics `json:"requests,omitempty"`
+	Window                  *WindowStats     `json:"window,omitempty"` // ours: file-only steady-state window block
 	Saturation              interface{}      `json:"saturation,omitempty"` // saturation.Result, using interface{} to avoid import cycle
 	// Goodput fields (issue #1409). Populated by cmd/-side goodput wiring when
 	// --slo-ttft/itl/e2e flags or workload-spec/trace-header goodput_slo_targets
