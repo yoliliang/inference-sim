@@ -1,4 +1,8 @@
-# Revenue management parameters for ours/objective.py. PLACEHOLDER VALUES.
+# Revenue management parameters for ours/objective.py. Working values set 2026-09-13:
+# pi_out / pi_in = 4 (commercial API output-to-input price ratio), h = 0.03 per second for
+# every type, calibrated so that the uncongested sojourn costs 4 to 16 percent of the reward
+# (type1 7 percent, type2 4 percent, type3 16 percent). Prices are O(1) constants and do not
+# change with the system size n.
 #
 # Per completed request of type k the system earns
 #     reward_k  = pi_in_k * P + pi_out_k * o          (P input tokens, o output tokens)
@@ -14,12 +18,12 @@ types:
   type1:            # short chat, P = 256, mean o = 64
     pi_in: 1.0
     pi_out: 4.0
-    h: 1.0
+    h: 0.03
   type2:            # RAG, P = 2048, mean o = 128
     pi_in: 1.0
     pi_out: 4.0
-    h: 1.0
+    h: 0.03
   type3:            # long generation, P = 512, mean o = 1024
     pi_in: 1.0
     pi_out: 4.0
-    h: 1.0
+    h: 0.03
