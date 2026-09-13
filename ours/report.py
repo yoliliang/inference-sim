@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ours/report.py <experiment folder>: write README.pdf for one experiment.
+"""ours/report.py <experiment folder>: write report.pdf for one experiment.
 
 Structure (an e-companion numerical-details section):
     1  Question                      from README.md (text before the first "##" heading)
@@ -8,9 +8,10 @@ Structure (an e-companion numerical-details section):
     4  Workload                      type table from the spec yaml, rate grid, seeds, horizon
     5  Control policies              admission, routing, snapshot interval, scheduler, eviction
     6  Statistics                    window, estimators, censoring, confidence intervals
-    7  Results                       summary.csv tables (all, then per type) and figures
+    7  Results                       summary.csv tables (all, then per type) and sweep figures
     8  Notes and interpretation      remaining README.md sections
     9  Artifacts                     files in the folder
+    Appendix                         the six-panel figure of the first sample path at every rate
 
 Compiles with pdflatex (MiKTeX). Re-runnable; README.md is the editable text source.
 """
@@ -252,31 +253,45 @@ def build(exp):
             tex.append(rf"\begin{{figure}}[H]\centering\includegraphics[width=\linewidth]{{{fig}}}\caption{{{esc(cap)}}}\end{{figure}}")
     panels = sorted(glob.glob(os.path.join(exp, "runs", "*_panel.png")))
     if panels:
-        tex.append(esc(f"Per-path six-panel figures: {len(panels)} files in runs/ (one per rate and seed)."))
+        tex.append(esc(f"Per-path six-panel figures: {len(panels)} files in runs/ (one per rate and seed); "
+                       f"the first sample path of every rate is reproduced in the appendix."))
 
     tex.append(r"\subsection*{8. Notes and interpretation}")
     tex.append(md_to_tex(rest) if rest.strip() else "(none)")
+
+    first_seed = min(m.get("seeds", [1]) or [1])
+    appendix = []
+    for rate in m.get("rates", []):
+        png = f"runs/rate{rate:g}_s{first_seed}_panel.png"  # forward slash: LaTeX path
+        if os.path.exists(os.path.join(exp, png)):
+            appendix.append(
+                rf"egin{{figure}}[p]\centering\includegraphics[width=\linewidth]{{{png}}}"
+                rf"\caption{{Sample path at rate {rate:g} req/s, seed {first_seed}: latency densities, queue wait against "
+                r"arrival time, KV occupancy, queue and batch sizes, evictions per second. Dashed lines mark the window.}\end{figure}")
 
     tex.append(r"\subsection*{9. Artifacts}")
     files = sorted(os.listdir(exp))
     nruns = len(glob.glob(os.path.join(exp, "runs", "*.json*")))
     tex.append(esc(", ".join(f for f in files if f != "runs")) + esc(f"; runs/: {nruns} runs, each with metrics json (gzipped), BLIS log, state csv and panel png."))
+    if appendix:
+        tex.append(r"\clearpage\subsection*{Appendix: one sample path per rate}")
+        tex.extend(appendix)
     tex.append(r"\end{document}")
 
-    texpath = os.path.join(exp, "README.tex")
+    texpath = os.path.join(exp, "report.tex")
     open(texpath, "w", encoding="utf-8").write("\n\n".join(tex))
     for _ in range(2):
-        r = subprocess.run(["pdflatex", "-interaction=nonstopmode", "-halt-on-error", "README.tex"],
+        r = subprocess.run(["pdflatex", "-interaction=nonstopmode", "-halt-on-error", "report.tex"],
                            cwd=exp, capture_output=True, text=True)
     if r.returncode != 0:
         print(r.stdout[-3000:])
-        sys.exit("pdflatex failed; README.tex kept for inspection")
+        sys.exit("pdflatex failed; report.tex kept for inspection")
     for ext in (".aux", ".log", ".out"):
         try:
-            os.remove(os.path.join(exp, "README" + ext))
+            os.remove(os.path.join(exp, "report" + ext))
         except OSError:
             pass
-    print("wrote", os.path.join(exp, "README.pdf"))
+    print("wrote", os.path.join(exp, "report.pdf"))
 
 
 if __name__ == "__main__":
