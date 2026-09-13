@@ -97,7 +97,7 @@ def para(s):
 RESULT_COLS = [
     ("rate", "rate (req/s)", "int"), ("arrived_mean", "arrivals", "int"),
     ("unfinished_frac_mean", "unfinished", "pct"), ("rejected_frac_mean", "rejected", "pct"),
-    ("delay_mean_ms_mean", "wait mean (s)", "s"), ("delay_mean_ms_ci95", "CI (s)", "s"),
+    ("delay_mean_ms_mean", "wait mean (s)", "s"), ("delay_mean_ms_ci95", "band (s)", "s"),
     ("delay_p99_ms_mean", "wait p99 (s)", "s"), ("ttft_p99_ms_mean", "TTFT p99 (s)", "s"),
     ("e2e_mean_ms_mean", "E2E mean (s)", "s"), ("preempt_per_s_mean", "evictions/s", "rate1"),
     ("preempt_per_completed_mean", "evictions per completion", "rate3"),
@@ -121,7 +121,7 @@ def cell(x, kind):
 
 def results_table(summary, t, caption, scaling=False):
     s = summary[summary["type"] == t].sort_values(["n", "rate"] if "n" in summary else "rate")
-    cols = ([("n", "instances", "int")] if scaling else []) + [c for c in RESULT_COLS if c[0] in s.columns]
+    cols = ([("n", "scale n", "int")] if scaling else []) + [c for c in RESULT_COLS if c[0] in s.columns]
     out = [r"\begin{table}[H]\centering\small", r"\resizebox{\linewidth}{!}{",
            r"\begin{tabular}{@{}" + "r" * len(cols) + r"@{}}", r"\toprule",
            " & ".join(esc(c[1]) for c in cols) + r" \\", r"\midrule"]
@@ -234,7 +234,7 @@ def build(exp):
     tex.append(r"\subsection*{3. System}")
     tex.append(kv_table([
         ("Served model", f"{flag(fl, '--model')}: the language model every instance runs (Qwen3, 14 billion parameters)"),
-        ("Instances", (f"n varies over {', '.join(str(x) for x in inst_list)} (scaling experiment); each instance is one {flag(fl, '--hardware')} GPU holding a full copy of the model; a request is served entirely by one instance"
+        ("Instances", (f"the system scale n sets the instance count: n in {', '.join(str(x) for x in inst_list)}; each instance is one {flag(fl, '--hardware')} GPU holding a full copy of the model; a request is served entirely by one instance"
                        if scaling else f"{n_inst} identical instances, each one {flag(fl, '--hardware')} GPU holding a full copy of the model; a request is served entirely by one instance")),
         ("KV cache per instance", f"{blocks:,} blocks of {bs} tokens = {blocks * bs:,} tokens. This is the memory that limits how many requests an instance can hold at once: every token of a request's prompt and answer occupies one slot until the request finishes." + (" 15,909 is the value BLIS derives from the GPU's memory after the model weights." if blocks == 15909 else " Set explicitly to create a memory-bound regime.")),
         ("Tokens processed per step", f"{step_tokens}. Each GPU step processes at most this many new tokens across all requests in the batch (prompt tokens being prefilled plus one token per decoding request). It is a compute budget per step, not memory; a long prompt is split over several steps."),
@@ -243,6 +243,9 @@ def build(exp):
 
     # 4
     tex.append(r"\subsection*{4. Workload}")
+    if scaling:
+        tex.append(r"\paragraph*{The system scale n.}")
+        tex.append(para(f"One number n indexes the system sequence and fixes every experiment variable: the cluster has n instances (n x {blocks:,} KV blocks in total), the total arrival rate is n x {rpi:g} req/s with the type shares unchanged, the per-instance memory, per-step limits, request types, horizon, window and prices do not change with n. Supply and demand therefore grow together and the load per instance is the same at every n, which is the large-market regime of Balseiro, Ma and Zhang (2025). System totals (throughput, evictions, objective value) are expected to grow linearly in n; per-request quantities (wait, TTFT, unfinished fraction) are expected to converge."))
     tex.append(para("Requests arrive from three independent Poisson streams, one per type; the total rate is split by the shares in the table. Each request has a prompt length (input tokens) and an answer length (output tokens), drawn once at arrival. The arrival times and the lengths are the only randomness in a run; the seed fixes both."))
     rows = [r"\begin{table}[H]\centering\small", r"\begin{tabular}{@{}p{0.09\linewidth}p{0.40\linewidth}rp{0.13\linewidth}p{0.26\linewidth}@{}}", r"\toprule",
             r"type & meaning & share & prompt tokens & answer tokens \\", r"\midrule"]
@@ -255,9 +258,9 @@ def build(exp):
              r"\end{table}"]
     tex.append("\n".join(rows))
     tex.append(kv_table([
-        ("Arrival rate", (f"{rpi:g} req/s per instance, total rate = n x {rpi:g}: " + ", ".join(f"n={n}: {n * rpi:g}" for n in inst_list) + ". The system sequence scales supply (instances) and demand (rate) together with the request types fixed, the large-market regime of Balseiro, Ma and Zhang (2025)."
+        ("Arrival rate", (f"total rate = n x {rpi:g} req/s: " + ", ".join(f"n={n}: {n * rpi:g}" for n in inst_list)
                           if scaling else ", ".join(f"{r:g}" for r in m.get("rates", [])) + " req/s, total over all types")),
-        ("Seeds", f"{len(m.get('seeds', []))} ({m['seeds'][0]} to {m['seeds'][-1]}); one seed = one sample path" if m.get("seeds") else ""),
+        ("Seeds", f"{len(m.get('seeds', []))} ({m['seeds'][0]} to {m['seeds'][-1]}); one seed = one sample path" + (" at every n" if scaling else "") if m.get("seeds") else ""),
         ("Horizon", f"{horizon:g} s of simulated time per sample path" if horizon else f"{m.get('num_requests')} arrivals then drain"),
         ("Economic parameters", "not used in this experiment. Rewards per type and the congestion cost (ours/specs/objective.yaml) are still to be decided."),
     ]))
@@ -297,21 +300,21 @@ def build(exp):
         ("Steady-state window", f"requests that arrive in {win}. The first {warm:g} s are discarded because the system starts empty and takes time to fill; the last {tail:g} s are discarded because late arrivals have not had time to finish"),
         ("Per-path statistics", "over the completed requests that arrived in the window: mean, median and 99th percentile of TTFT, E2E and queue wait; fractions of window arrivals that were unfinished at the horizon or rejected; evictions per second and per completion; output tokens per second (a time average over the window)"),
         ("Unfinished requests", "counted, never timed: a request still in the system at the horizon contributes to the unfinished fraction and to nothing else"),
-        ("Across paths", "mean over the seeds and a 95 percent confidence half-width from the Student t distribution with (number of seeds minus 1) degrees of freedom"),
+        ("Across paths", "mean over the seeds and a 95 percent confidence band (half-width from the Student t distribution with number of seeds minus 1 degrees of freedom); shaded in the figures, the band column in the tables"),
         ("Comparisons", "different policies are run on the same seeds, so they face identical arrivals and lengths (common random numbers)"),
     ]))
 
     # 7
     tex.append(r"\subsection*{7. Results}")
     tex.append(r"\paragraph*{Reading the columns.}")
-    tex.append(para("Queue wait: from arrival until the instance first puts the request into a batch. TTFT (time to first token): from arrival until the first answer token, that is wait plus prompt processing. E2E (end to end): from arrival until the last answer token. p99: the 99th percentile, the value that 99 percent of requests stay below; the tail of the distribution. CI: half-width of the 95 percent confidence interval of the wait mean across seeds. Unfinished, rejected: percent of the requests arriving in the window. Evictions/s: evictions per second of simulated time, whole cluster. Evictions per completion: evictions divided by completed window requests. Output tok/s: answer tokens produced per second, whole cluster. Times are in seconds."))
+    tex.append(para("Queue wait: from arrival until the instance first puts the request into a batch. TTFT (time to first token): from arrival until the first answer token, that is wait plus prompt processing. E2E (end to end): from arrival until the last answer token. p99: the 99th percentile, the value that 99 percent of requests stay below; the tail of the distribution. Band: half-width of the 95 percent confidence band of the wait mean across seeds. Unfinished, rejected: percent of the requests arriving in the window. Evictions/s: evictions per second of simulated time, whole cluster. Evictions per completion: evictions divided by completed window requests. Output tok/s: answer tokens produced per second, whole cluster. Times are in seconds."))
     if summary is not None:
         tex.append(results_table(summary, "all", "All types, mean over seeds.", scaling))
         for t in ("type1", "type2", "type3"):
             if (summary["type"] == t).any():
                 tex.append(results_table(summary, t, f"{t} only, mean over seeds.", scaling))
-    figs = [("scaling_panel.png", "Per-instance metrics against the number of instances n (log2 axis), mean over seeds with 95 percent confidence bars. Dashed lines are least-squares power-law fits n^b to the all-types means; b is in the legend and in the table below."),
-            ("sweep_panel.png", "Window statistics against the total arrival rate: mean over seeds with 95 percent confidence bars."),
+    figs = [("scaling_panel.png", "Key system statistics against the system scale n (log2 axis): mean over seeds with the shaded 95 percent confidence band. System totals (value, throughput, evictions) should grow linearly, per-request quantities should converge. Dashed lines are least-squares power-law fits to the all-types means; the exponent is in the legend and in the table below."),
+            ("sweep_panel.png", "Window statistics against the total arrival rate: mean over seeds with the shaded 95 percent confidence band."),
             ("objective.png", "Revenue management objective per second (placeholder prices, see ours/specs/objective.yaml).")]
     for fig, cap in figs:
         if os.path.exists(os.path.join(exp, fig)):
@@ -320,12 +323,13 @@ def build(exp):
     if scaling and os.path.exists(fits_path):
         fits = pd.read_csv(fits_path)
         rows = [r"\begin{table}[H]\centering\small", r"\begin{tabular}{@{}lcrr@{}}", r"\toprule",
-                r"metric & per instance & exponent b & points \\", r"\midrule"]
+                r"statistic & kind & exponent b & points \\", r"\midrule"]
         for _, r in fits.iterrows():
             b = "" if pd.isna(r["exponent"]) else f"{r['exponent']:.3f}"
-            rows.append(f"{esc(r['metric'])} & {'yes' if r['per_instance'] else 'no'} & {b} & {int(r['points'])} \\\\")
+            kind = r["kind"] if "kind" in r else ("per instance" if r.get("per_instance") else "level")
+            rows.append(f"{esc(r['metric'])} & {esc(kind)} & {b} & {int(r['points'])} \\\\")
         rows += [r"\bottomrule", r"\end{tabular}",
-                 r"\caption{Power-law fits, y = a times n to the power b, on the all-types means. An exponent near 0 means the per-instance quantity is invariant to scale; a blank exponent means the quantity was zero or negative at some n and no log fit exists.}",
+                 r"\caption{Power-law fits, y = a times n to the power b, on the all-types means. For a system total an exponent of 1 means linear scaling; for a per-request quantity an exponent of 0 means invariance to scale. A blank exponent means the quantity was zero or negative at some n and no log fit exists.}",
                  r"\end{table}"]
         tex.append("\n".join(rows))
 
@@ -342,7 +346,7 @@ def build(exp):
     # appendix
     first_seed = min(m.get("seeds", [1]) or [1])
     appendix = []
-    points = [(f"n{n}", f"n = {n} instances, {n * rpi:g} req/s") for n in inst_list] if scaling else \
+    points = [(f"n{n}", f"system scale n = {n} ({n} instances, {n * rpi:g} req/s)") for n in inst_list] if scaling else \
              [(f"rate{r:g}", f"{r:g} req/s") for r in m.get("rates", [])]
     for prefix, label in points:
         png = f"runs/{prefix}_s{first_seed}_panel.png"

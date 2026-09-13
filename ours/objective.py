@@ -109,8 +109,9 @@ def main():
                                "reward per second", "congestion cost per second")):
         for t in TYPES + ["all"]:
             s = summary[summary["type"] == t].sort_values("rate")
-            ax.errorbar(s.rate, s[col + "_mean"], yerr=s[col + "_ci95"], marker="o", ms=4,
-                        lw=1.5, capsize=3, color=COLORS[t], label=t)
+            x, y, e = s.rate.values, s[col + "_mean"].values, s[col + "_ci95"].fillna(0).values
+            ax.plot(x, y, marker="o", ms=4, lw=1.5, color=COLORS[t], label=t)
+            ax.fill_between(x, y - e, y + e, color=COLORS[t], alpha=0.18, linewidth=0)
         ax.set_xlabel("total arrival rate, req/s")
         ax.set_ylabel(label)
         ax.grid(True, color="#e5e5e5", lw=0.8)
@@ -124,7 +125,7 @@ def main():
     if manifest.get("experiment") == "scaling" and summary.n.nunique() > 1:
         analyze.scaling_plot(pd.read_csv(os.path.join(a.exp, "summary.csv")), os.path.join(a.exp, "scaling_panel.png"),
                              os.path.join(a.exp, "scaling_fits.csv"),
-                             f"{os.path.basename(a.exp)}: per-instance metrics and objective against n",
+                             f"{os.path.basename(a.exp)}: key statistics and objective against the system scale, 95 percent confidence band",
                              extra=summary[summary["type"] == "all"])
     show = ["n", "rate", "type", "n_seeds", "value_per_s_mean", "value_per_s_ci95", "reward_per_s_mean",
             "cost_per_s_mean", "cost_unfinished_per_s_mean"]

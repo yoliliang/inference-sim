@@ -299,8 +299,9 @@ def sweep_plot(summary, out_png, title):
             s = summary[summary["type"] == t].sort_values("rate")
             if s.empty:
                 continue
-            ax.errorbar(s.rate, k * s[f"{m}_mean"], yerr=k * s[f"{m}_ci95"], marker="o", ms=4, lw=1.5,
-                        capsize=3, color=TYPE_COLORS[t], label=t)
+            x, y, e = s.rate.values, k * s[f"{m}_mean"].values, k * s[f"{m}_ci95"].fillna(0).values
+            ax.plot(x, y, marker="o", ms=4, lw=1.5, color=TYPE_COLORS[t], label=t)
+            ax.fill_between(x, y - e, y + e, color=TYPE_COLORS[t], alpha=0.18, linewidth=0)
         if logy:
             ax.set_yscale("log")
         ax.set_xlabel("total arrival rate, req/s")
@@ -325,45 +326,46 @@ def powerlaw_fit(x, y):
     return b, a, int(ok.sum())
 
 
-SCALING_METRICS = [  # (column, label, divide by n)
-    ("delay_mean_ms", "mean queue wait, ms", False),
-    ("ttft_p99_ms", "time to first token p99, ms", False),
-    ("unfinished_frac", "unfinished at horizon, fraction", False),
-    ("preempt_per_s", "evictions per second per instance", True),
-    ("output_tok_per_s", "output tokens per second per instance", True),
-    ("wasted_tok_per_arrival", "wasted tokens per arrival", False),
+SCALING_METRICS = [  # (column, label, kind) kind: "total" = system total, "level" = as is
+    ("output_tok_per_s", "output tokens per second, whole system", "total"),
+    ("preempt_per_s", "evictions per second, whole system", "total"),
+    ("delay_mean_ms", "mean queue wait, ms", "level"),
+    ("ttft_p99_ms", "time to first token p99, ms", "level"),
+    ("unfinished_frac", "unfinished at horizon, fraction of arrivals", "level"),
+    ("wasted_tok_per_arrival", "wasted tokens per arrival", "level"),
 ]
 
 
 def scaling_plot(summary, out_png, out_csv, title, extra=None):
-    """Per-instance metrics against n with a power-law fit n^b on the type all means.
-    extra: optional DataFrame (objective summary, type all) with n, value_per_s_mean, value_per_s_ci95."""
+    """Key system statistics against the system scale n, mean over seeds with a shaded
+    95 percent confidence band, and a power-law fit n^b on the all-types means.
+    extra: optional objective summary (type all) with n, value_per_s_mean, value_per_s_ci95."""
     metrics = list(SCALING_METRICS)
     if extra is not None:
-        metrics.append(("value_per_s", "objective value per second per instance", True))
+        metrics.insert(0, ("value_per_s", "objective value per second, whole system", "total"))
     fits = []
     ncol = 3
     nrow = int(math.ceil(len(metrics) / ncol))
     fig, axes = plt.subplots(nrow, ncol, figsize=(5 * ncol, 4 * nrow), dpi=130)
-    for ax, (m, label, per_n) in zip(axes.flat, metrics):
+    for ax, (m, label, kind) in zip(axes.flat, metrics):
         src = extra if m == "value_per_s" else summary
         for t in (["all"] if m == "value_per_s" else TYPES + ["all"]):
             s = src[src["type"] == t].sort_values("n")
             if s.empty or f"{m}_mean" not in s:
                 continue
-            k = 1.0 / s["n"] if per_n else 1.0
-            y, e = k * s[f"{m}_mean"], k * s[f"{m}_ci95"]
-            ax.errorbar(s["n"], y, yerr=e, marker="o", ms=4, lw=1.5, capsize=3, color=TYPE_COLORS[t], label=t)
+            x, y, e = s["n"].values, s[f"{m}_mean"].values, s[f"{m}_ci95"].fillna(0).values
+            ax.plot(x, y, marker="o", ms=4, lw=1.5, color=TYPE_COLORS[t], label=t)
+            ax.fill_between(x, y - e, y + e, color=TYPE_COLORS[t], alpha=0.18, linewidth=0)
             if t == "all":
-                b, a0, npts = powerlaw_fit(s["n"], y)
-                fits.append({"metric": m, "per_instance": per_n, "exponent": b, "intercept_log": a0, "points": npts})
+                b, a0, npts = powerlaw_fit(x, y)
+                fits.append({"metric": m, "kind": kind, "exponent": b, "intercept_log": a0, "points": npts})
                 if np.isfinite(b):
-                    xx = np.linspace(s["n"].min(), s["n"].max(), 50)
+                    xx = np.linspace(x.min(), x.max(), 50)
                     ax.plot(xx, np.exp(a0) * xx ** b, ls="--", color="#333", lw=1, label=f"fit n^{b:.2f}")
         ax.set_xscale("log", base=2)
-        if m not in ("unfinished_frac", "value_per_s"):
+        if kind == "total" and m != "value_per_s":
             ax.set_yscale("log")
-        ax.set_xlabel("instances n (total rate = n x rate per instance)")
+        ax.set_xlabel("system scale n")
         ax.set_ylabel(label)
         ax.grid(True, color="#e5e5e5", lw=0.8)
         ax.legend(frameon=False, fontsize=7)
@@ -410,12 +412,12 @@ def analyze_experiment(exp, all_panels=False):
     summary.to_csv(os.path.join(exp, "summary.csv"), index=False)
     if scaling and summary.n.nunique() > 1:
         fits = scaling_plot(summary, os.path.join(exp, "scaling_panel.png"), os.path.join(exp, "scaling_fits.csv"),
-                            f"{os.path.basename(exp)}: per-instance metrics against n, {summary.n_seeds.max()} seeds, 95 percent CI")
+                            f"{os.path.basename(exp)}: key statistics against the system scale, {summary.n_seeds.max()} seeds, 95 percent confidence band")
         print(fits.to_string(index=False))
     elif summary.rate.nunique() > 1:
         sweep_plot(summary, os.path.join(exp, "sweep_panel.png"),
                    f"{os.path.basename(exp)}: steady-state window, "
-                   f"{summary.n_seeds.max()} seeds, 95 percent CI")
+                   f"{summary.n_seeds.max()} seeds, 95 percent confidence band")
     show = ["n", "rate", "type", "n_seeds", "arrived_mean", "unfinished_frac_mean", "rejected_frac_mean",
             "delay_mean_ms_mean", "delay_mean_ms_ci95", "ttft_p99_ms_mean", "e2e_mean_ms_mean",
             "preempt_per_arrival_mean"]
