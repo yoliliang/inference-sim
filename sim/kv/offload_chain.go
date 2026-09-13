@@ -433,7 +433,7 @@ func (o *OffloadCache) consultAndReload(tokens []sim.TokenID, startBlock int64, 
 			}
 			// Lazy hash deletion (vLLM parity): clear a stale hash before refilling.
 			if gpuBlk.Hash != "" {
-				delete(o.gpu.HashToBlock, gpuBlk.Hash)
+				o.gpu.delHash(gpuBlk.Hash) // ours
 				gpuBlk.Hash = ""
 			}
 			start := i * bs
@@ -441,7 +441,7 @@ func (o *OffloadCache) consultAndReload(tokens []sim.TokenID, startBlock int64, 
 			gpuBlk.Hash = h
 			gpuBlk.RefCount = 0
 			gpuBlk.InUse = false
-			o.gpu.HashToBlock[h] = gpuBlk.ID
+			o.gpu.setHash(h, gpuBlk.ID) // ours
 			o.gpu.appendToFreeList(gpuBlk)
 			o.cpu.touchKey(key) // block is hot: refresh LRU recency
 			o.reloadCount++

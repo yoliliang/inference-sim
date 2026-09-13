@@ -21,6 +21,9 @@ Branch: ours
 - sim/cluster/instance.go: +InstanceSimulator.RequestSnapshots() wrapper
 - sim/cluster/cluster.go (second item): +progressRequestDetail flag, SetProgressRequestDetail; maybeDeliverProgressSnapshot fills Requests when on
 - cmd/state_sample.go, cmd/root.go: +--state-snapshot-interval writing <metrics-path>_snapshot.csv
+- sim/kv/cache.go: incremental snapshot of HashToBlock (setHash, delHash, refreshSnapshot); SnapshotCachedBlocksFn replays a change log instead of copying the whole map at every refresh. Same frozen-copy semantics, stdout byte-identical, 4.5x faster on the B1 profile at scale
+- sim/kv/offload_chain.go, sim/kv/tiered.go: HashToBlock writes routed through setHash / delHash
+- main.go: BLIS_CPUPROFILE environment variable starts a CPU profile (diagnostic only)
 
 ## Files added (ours)
 

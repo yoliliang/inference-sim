@@ -36,6 +36,11 @@ type KVBlock struct {
 // via a direct counter on the free list (FreeBlockCnt), mirroring vLLM's
 // FreeKVCacheBlockQueue.num_free_blocks.
 type KVCacheState struct {
+	// ours: incremental snapshot state, see refreshSnapshot
+	snapMap   map[string]int64
+	snapLog   []hashOp
+	snapValid bool
+
 	TotalBlocks     int64              // Total KV blocks available on GPU
 	BlockSizeTokens int64              // Tokens per block
 	Blocks          []*KVBlock         // All KV blocks
@@ -152,10 +157,7 @@ func (kvc *KVCacheState) GetCachedBlocks(tokens []sim.TokenID) (blockIDs []int64
 // HashToBlock state. If this loop, the hash chain logic, or the break condition
 // changes, update GetCachedBlocks to match.
 func (kvc *KVCacheState) SnapshotCachedBlocksFn() func([]sim.TokenID) int {
-	snapshot := make(map[string]int64, len(kvc.HashToBlock))
-	for k, v := range kvc.HashToBlock {
-		snapshot[k] = v
-	}
+	snapshot := kvc.refreshSnapshot()
 	blockSize := kvc.BlockSizeTokens
 	return func(tokens []sim.TokenID) int {
 		n := int64(len(tokens)) / blockSize
@@ -173,6 +175,63 @@ func (kvc *KVCacheState) SnapshotCachedBlocksFn() func([]sim.TokenID) int {
 		}
 		return count
 	}
+}
+
+// ours: incremental snapshot of HashToBlock. Upstream copied the whole map on every
+// refresh (every 50 ms of simulated time per instance), which was two thirds of the
+// run time at scale. The frozen-copy semantics are kept: refreshSnapshot returns a map
+// equal to HashToBlock at the moment of the call, built by replaying the writes made
+// since the previous snapshot. Every write to HashToBlock must go through setHash or
+// delHash; a log longer than the map itself falls back to a full copy.
+type hashOp struct {
+	key string
+	id  int64
+	del bool
+}
+
+func (kvc *KVCacheState) setHash(h string, id int64) {
+	kvc.HashToBlock[h] = id
+	kvc.logHash(h, id, false)
+}
+
+func (kvc *KVCacheState) delHash(h string) {
+	delete(kvc.HashToBlock, h)
+	kvc.logHash(h, 0, true)
+}
+
+func (kvc *KVCacheState) logHash(h string, id int64, del bool) {
+	if !kvc.snapValid {
+		return
+	}
+	if len(kvc.snapLog) > len(kvc.HashToBlock)+1024 {
+		kvc.snapValid = false // too much churn since the last snapshot: rebuild fully next time
+		kvc.snapLog = nil
+		return
+	}
+	kvc.snapLog = append(kvc.snapLog, hashOp{key: h, id: id, del: del})
+}
+
+func (kvc *KVCacheState) refreshSnapshot() map[string]int64 {
+	if kvc.snapValid && kvc.snapMap != nil {
+		for _, op := range kvc.snapLog {
+			if op.del {
+				delete(kvc.snapMap, op.key)
+			} else {
+				kvc.snapMap[op.key] = op.id
+			}
+		}
+		kvc.snapLog = kvc.snapLog[:0]
+		if len(kvc.snapMap) == len(kvc.HashToBlock) {
+			return kvc.snapMap
+		}
+	}
+	kvc.snapMap = make(map[string]int64, len(kvc.HashToBlock))
+	for k, v := range kvc.HashToBlock {
+		kvc.snapMap[k] = v
+	}
+	kvc.snapLog = kvc.snapLog[:0]
+	kvc.snapValid = true
+	return kvc.snapMap
 }
 
 // AllocateKVBlocks handles KV Block allocation for both prefill and decode.
@@ -301,7 +360,7 @@ func (kvc *KVCacheState) AllocateKVBlocks(req *sim.Request, startIndex int64, en
 				}
 				h := hash.HashBlock(prevHash, latestBlk.Tokens)
 				latestBlk.Hash = h
-				kvc.HashToBlock[h] = latestBlk.ID
+				kvc.setHash(h, latestBlk.ID) // ours
 			}
 		} else {
 			// latest block is full or request is coming in for the first time.
@@ -332,7 +391,7 @@ func (kvc *KVCacheState) AllocateKVBlocks(req *sim.Request, startIndex int64, en
 				// popFreeBlock so preempted requests could find their cached
 				// prefix blocks on readmission.
 				if blk.Hash != "" {
-					delete(kvc.HashToBlock, blk.Hash)
+					kvc.delHash(blk.Hash) // ours
 					blk.Hash = ""
 				}
 
@@ -355,7 +414,7 @@ func (kvc *KVCacheState) AllocateKVBlocks(req *sim.Request, startIndex int64, en
 					// participate in prefix caching (input sequences only).
 					h := hash.HashBlock(prevHash, blk.Tokens)
 					blk.Hash = h
-					kvc.HashToBlock[h] = blk.ID
+					kvc.setHash(h, blk.ID) // ours
 					prevHash = h
 				}
 				// allocated is the block IDs allocated for this request

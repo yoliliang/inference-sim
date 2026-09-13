@@ -338,7 +338,7 @@ func (t *TieredKVCache) reloadPrefixFromCPU(tokens []sim.TokenID, startBlock int
 		// entry mapping the old hash to this block's ID even though the block
 		// is about to be overwritten with different content.
 		if gpuBlk.Hash != "" {
-			delete(t.gpu.HashToBlock, gpuBlk.Hash)
+			t.gpu.delHash(gpuBlk.Hash) // ours
 			gpuBlk.Hash = ""
 		}
 
@@ -346,7 +346,7 @@ func (t *TieredKVCache) reloadPrefixFromCPU(tokens []sim.TokenID, startBlock int
 		gpuBlk.Hash = h
 		gpuBlk.RefCount = 0
 		gpuBlk.InUse = false
-		t.gpu.HashToBlock[h] = gpuBlk.ID
+		t.gpu.setHash(h, gpuBlk.ID) // ours
 		t.gpu.appendToFreeList(gpuBlk)
 
 		// Accumulate transfer latency
