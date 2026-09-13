@@ -11,7 +11,7 @@ Branch: ours
 - sim/simulator.go: NewSimulator calls NewBatchFormationStrategy(cfg.BatchFormation, cfg.PreemptionPolicy) instead of NewBatchFormation
 - cmd/root.go: +--batch-formation flag (default vllm), validation, passed via WithBatchFormation; +--state-sample-interval / --state-sample-path flags and the ProgressHook wiring around cs.Run (see cmd/state_sample.go)
 - sim/metrics_utils.go: +3 omitempty fields on RequestMetrics (preemption_count, wasted_tokens, status); file-only, never on stdout
-- sim/metrics.go: +Metrics.ExtraRequests; EmitOutput sets Status (completed / unfinished) and appends ExtraRequests before the arrival sort
+- sim/metrics.go: +Metrics.ExtraRequests; EmitOutput sets Status (completed / unfinished) and appends ExtraRequests before the arrival sort; a --metrics-path ending in .gz is written gzip-compressed
 - sim/batch_formation.go: +PreemptedRequest.WastedTokens, set from ProgressIndex at eviction in preemptForTokens
 - sim/simulator.go: per-request PreemptionCount / WastedTokens accumulated where Metrics.PreemptionCount is incremented
 - sim/cluster/cluster.go: +rejectedRequestMetrics on ClusterSimulator; aggregateMetrics copies it into merged.ExtraRequests
