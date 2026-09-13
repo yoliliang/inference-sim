@@ -33,6 +33,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -212,10 +213,16 @@ def main():
 
     if jobs:
         print(f"{len(jobs)} sample paths, {a.jobs} at a time", flush=True)
+        t0, finished = time.time(), 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, a.jobs)) as pool:
             for tag, ok, line in pool.map(run_one, jobs):
-                print(line, flush=True)
+                finished += 1
                 n_ok += ok
+                elapsed = time.time() - t0
+                eta = elapsed / finished * (len(jobs) - finished)
+                k = int(30 * finished / len(jobs))
+                print(f"[{'#' * k}{'.' * (30 - k)}] {finished}/{len(jobs)}  {elapsed / 60:.0f} min elapsed, "
+                      f"about {eta / 60:.0f} min left    {line}", flush=True)
 
     if a.dry_run:
         return
