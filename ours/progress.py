@@ -17,7 +17,7 @@ def status(exp):
     n x total rate (event count grows with both), so the ETA is weighted, not a plain count."""
     m = json.load(open(os.path.join(exp, "manifest.json")))
     if m.get("experiment") == "scaling":
-        points = [(f"n{n}", n * n * m["rate_per_instance"]) for n in m["instances"]]
+        points = [(f"n{n}", n * m["rate_per_instance"]) for n in m["instances"]]  # work grows with the total rate, that is with n
     else:
         n = (m.get("instances") or [4])[0]
         points = [(f"rate{r:g}", n * r) for r in m["rates"]]
