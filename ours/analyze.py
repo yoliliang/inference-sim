@@ -11,7 +11,7 @@ counted per type (rejected_frac).
 Outputs, all inside the experiment folder:
     summary_runs.csv   one row per (rate, seed, type) with window metrics
     summary.csv        per (rate, type): across-seed mean and 95 percent CI half-width
-    runs/<tag>_panel.png   six-panel per-run summary, one sample path each
+    runs/<tag>_panel.png   six-panel figure for the lowest seed of each rate or n (all seeds with --all-panels)
                            (panels 4 and 5 need the _state.csv from --state-sample-ms,
                            panel 6 reads the preemption warnings in the BLIS log)
     sweep_panel.png    metric vs rate with CI bars (only when more than one rate)
@@ -379,8 +379,11 @@ def scaling_plot(summary, out_png, out_csv, title, extra=None):
     return pd.DataFrame(fits)
 
 
-def analyze_experiment(exp):
+def analyze_experiment(exp, all_panels=False):
+    """all_panels: draw the six-panel figure for every sample path (slow); default draws it
+    only for the lowest seed of each rate or n, which is what report.py reproduces."""
     manifest = json.load(open(os.path.join(exp, "manifest.json")))
+    first_seed = min(manifest.get("seeds") or [1])
     rows = []
     scaling = manifest.get("experiment") == "scaling"
     for path in sorted(glob.glob(os.path.join(exp, "runs", "*_s*.json")) +
@@ -393,6 +396,8 @@ def analyze_experiment(exp):
         warm, end = window_bounds(manifest, m)
         rows.extend(run_rows(df, warm, end, rate, seed, n))
         tag = os.path.basename(_stem(path))
+        if not all_panels and seed != first_seed:
+            continue
         panel_plot(df, state, load_preemptions(path, df), warm, end,
                    os.path.join(exp, "runs", tag + "_panel.png"),
                    f"{os.path.basename(exp)}    " + (f"n {n}    rate {rate:g}" if scaling else f"rate {rate:g}") + f"    seed {seed}")
@@ -420,6 +425,7 @@ def analyze_experiment(exp):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
+    args = [x for x in sys.argv[1:] if not x.startswith("--")]
+    if len(args) != 1:
         sys.exit(__doc__)
-    analyze_experiment(sys.argv[1])
+    analyze_experiment(args[0], all_panels="--all-panels" in sys.argv)
