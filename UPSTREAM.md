@@ -22,7 +22,8 @@ Branch: ours
 - sim/scheduler_typerank.go
 - sim/batch_formation_ours.go
 - cmd/state_sample.go (periodic per-instance state CSV via the existing read-only sim.ProgressHook)
-- ours/ (specs, run.ps1, run.sh, sweep.py fixed-horizon grid driver, analyze.py steady-state analysis and panel plots; results/ and experiments/ gitignored)
+- ours/ (specs, run.ps1, run.sh, sweep.py grid driver with B0/B1/floor/oracle/harness profiles, analyze.py steady-state analysis and panel plots, objective.py revenue-management objective, report.py README.pdf generator via pdflatex, visualization-brief.md; results/ and experiments/ gitignored)
+- notes/ (handover, benchmark brief, vLLM baseline definition)
 
 ## Known pre-existing test failure on Windows
 

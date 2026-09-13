@@ -41,15 +41,35 @@ import analyze  # noqa: E402
 
 BASE_FLAGS = [
     "--model", "qwen/qwen3-14b", "--hardware", "H100", "--tp", "1",
-    "--num-instances", "4", "--snapshot-refresh-interval", "0",
+    "--num-instances", "4",
 ]
 
-# Harness routing: weighted scorer over queue depth and KV utilisation, both weight 1,
-# with immediate snapshots (omniscient router). round-robin ignores instance state.
-ROUTING = {
-    "weighted": ["--routing-policy", "weighted",
-                 "--routing-scorers", "queue-depth:1,kv-utilization:1"],
-    "round-robin": ["--routing-policy", "round-robin"],
+# Configuration profiles (notes/benchmark-brief.md section 1). Each profile fixes the
+# gateway and engine controls; --blocks, rate, seed and horizon are set per run.
+#   B1        llm-d production default: weighted routing with the llm-d scorer profile,
+#             50 ms scraped snapshots, fcfs, tail eviction, H100 budgets 8192 / 1024
+#   B0        vLLM alone: vLLM data-parallel balancer (vllm-dp), live counters, same engine
+#   floor     B1 with round-robin routing (bracket, not a candidate)
+#   oracle    B1 with immediate snapshots (bracket, not a candidate)
+#   harness   the 2026-09-07 harness: queue-depth:1,kv-utilization:1, live snapshots,
+#             BLIS sub-80 GB budgets 2048 / 256 (kept for the regression anchors only)
+ENGINE_H100 = ["--scheduler", "fcfs", "--preemption-policy", "fcfs",
+               "--max-num-batched-tokens", "8192", "--max-num-seqs", "1024",
+               "--long-prefill-token-threshold", "0", "--block-size-in-tokens", "16",
+               "--batch-formation", "vllm", "--admission-policy", "always-admit"]
+LLMD_SCORERS = "precise-prefix-cache:2,queue-depth:1,kv-utilization:1"
+PROFILES = {
+    "B1": ["--routing-policy", "weighted", "--routing-scorers", LLMD_SCORERS,
+           "--snapshot-refresh-interval", "50000", *ENGINE_H100],
+    "B0": ["--routing-policy", "weighted", "--routing-scorers", "vllm-dp:1",
+           "--snapshot-refresh-interval", "0", *ENGINE_H100],
+    "floor": ["--routing-policy", "round-robin",
+              "--snapshot-refresh-interval", "50000", *ENGINE_H100],
+    "oracle": ["--routing-policy", "weighted", "--routing-scorers", LLMD_SCORERS,
+               "--snapshot-refresh-interval", "0", *ENGINE_H100],
+    "harness": ["--routing-policy", "weighted",
+                "--routing-scorers", "queue-depth:1,kv-utilization:1",
+                "--snapshot-refresh-interval", "0"],
 }
 
 
@@ -88,7 +108,8 @@ def main():
                     help="analysis: ignore requests arriving in the last tail-s seconds")
     ap.add_argument("--state-sample-ms", type=int, default=0,
                     help="write per-instance state every N ms of simulated time (0 = off)")
-    ap.add_argument("--routing", choices=sorted(ROUTING), default="weighted")
+    ap.add_argument("--profile", choices=sorted(PROFILES), default="B1",
+                    help="configuration profile, see PROFILES (default B1, llm-d production default)")
     ap.add_argument("--spec", default=os.path.join(HERE, "specs", "types3.yaml"))
     ap.add_argument("--question", default="")
     ap.add_argument("--dry-run", action="store_true")
@@ -118,8 +139,8 @@ def main():
         "horizon_s": a.horizon_s, "num_requests": None if fixed else a.num_requests,
         "warmup_s": a.warmup_s, "tail_s": a.tail_s,
         "state_sample_ms": a.state_sample_ms,
-        "blocks": a.blocks, "routing": a.routing,
-        "base_flags": BASE_FLAGS + ROUTING[a.routing] + mode_flags,
+        "blocks": a.blocks, "profile": a.profile,
+        "base_flags": BASE_FLAGS + PROFILES[a.profile] + mode_flags,
         "extra_flags": a.extra,
         "rates": rates, "seeds": seeds, "spec_template": a.spec,
     }
@@ -138,7 +159,7 @@ def main():
             tag = f"{rtag}_s{seed}"
             out = os.path.join(exp, "runs", tag + ".json")
             log = os.path.join(exp, "runs", tag + ".log")
-            cmd = [BIN, "run", *BASE_FLAGS, *ROUTING[a.routing], *mode_flags,
+            cmd = [BIN, "run", *BASE_FLAGS, *PROFILES[a.profile], *mode_flags,
                    "--workload-spec", spec,
                    "--total-kv-blocks", str(a.blocks),
                    "--seed", str(seed),
