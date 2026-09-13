@@ -13,25 +13,29 @@ import time
 
 
 def status(exp):
+    """Finished and total work, where the work of one path is proportional to
+    n x total rate (event count grows with both), so the ETA is weighted, not a plain count."""
     m = json.load(open(os.path.join(exp, "manifest.json")))
     if m.get("experiment") == "scaling":
-        points = [f"n{n}" for n in m["instances"]]
+        points = [(f"n{n}", n * n * m["rate_per_instance"]) for n in m["instances"]]
     else:
-        points = [f"rate{r:g}" for r in m["rates"]]
+        n = (m.get("instances") or [4])[0]
+        points = [(f"rate{r:g}", n * r) for r in m["rates"]]
     seeds = m["seeds"]
-    total = len(points) * len(seeds)
-    done_files = []
-    for p in points:
+    total, done = 0, 0
+    work_total, work_done = 0.0, 0.0
+    for p, w in points:
         for s in seeds:
-            f = os.path.join(exp, "runs", f"{p}_s{s}.json.gz")
-            if os.path.exists(f):
-                done_files.append(f)
-    done = len(done_files)
+            total += 1
+            work_total += w
+            if os.path.exists(os.path.join(exp, "runs", f"{p}_s{s}.json.gz")):
+                done += 1
+                work_done += w
     started = min((os.path.getmtime(f) for f in glob.glob(os.path.join(exp, "runs", "*.log"))), default=None)
     eta = None
-    if done and started:
+    if work_done and started and done < total:
         elapsed = time.time() - started
-        eta = elapsed / done * (total - done)
+        eta = elapsed / work_done * (work_total - work_done)
     return m, total, done, eta
 
 
