@@ -84,4 +84,17 @@ type InstanceSnapshot struct {
 	State InstanceState
 
 	Model string
+
+	// ours: per-request composition of the wait queue and running batch. nil unless
+	// the cluster was asked for request detail (ClusterSimulator.SetProgressRequestDetail).
+	Requests []RequestSnapshot
+}
+
+// RequestSnapshot is one request's state at a snapshot instant (ours).
+type RequestSnapshot struct {
+	ID             string
+	TenantID       string
+	State          string // "queued" or "running"
+	InputTokens    int64
+	ProgressTokens int64 // ProgressIndex: input tokens processed plus output tokens generated so far
 }

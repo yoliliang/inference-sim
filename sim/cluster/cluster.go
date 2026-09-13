@@ -54,6 +54,7 @@ type ClusterSimulator struct {
 	routingPolicy     sim.RoutingPolicy
 	rejectedRequests  int            // EC-2: count of requests rejected by admission policy
 	rejectedRequestMetrics []sim.RequestMetrics // ours: one row per admission rejection, for the file-only Requests[] array
+	progressRequestDetail  bool                 // ours: fill InstanceSnapshot.Requests in progress snapshots
 	routingRejections int            // I13: count of requests rejected at routing (no routable instances)
 	shedByTier        map[string]int // per-SLOClass shedding: admission rejections + gateway queue shed + in-flight evictions
 	// injectedByClass: per-SLOClass arrival counter. Incremented in ClusterArrivalEvent.Execute
@@ -1054,6 +1055,10 @@ func (c *ClusterSimulator) nextSeqID() int64 {
 // simClockIntervalUs controls the minimum simulation-clock interval (microseconds)
 // between periodic snapshots. If simClockIntervalUs <= 0, only the final snapshot
 // is delivered.
+// SetProgressRequestDetail makes every progress snapshot carry the per-request
+// composition of each instance (ours; read-only, INV-6 safe).
+func (c *ClusterSimulator) SetProgressRequestDetail(on bool) { c.progressRequestDetail = on }
+
 func (c *ClusterSimulator) SetProgressHook(hook sim.ProgressHook, simClockIntervalUs int64) {
 	c.progressHook = hook
 	if simClockIntervalUs > 0 {
@@ -1079,7 +1084,12 @@ func (c *ClusterSimulator) maybeDeliverProgressSnapshot(isFinal bool) {
 		if inst.State == sim.InstanceStateActive || inst.State == sim.InstanceStateWarmingUp {
 			activeCount++
 		}
+		var reqDetail []sim.RequestSnapshot // ours
+		if c.progressRequestDetail && inst.HasSim() {
+			reqDetail = inst.RequestSnapshots()
+		}
 		instanceSnaps = append(instanceSnaps, sim.InstanceSnapshot{
+			Requests:          reqDetail,
 			ID:                string(inst.ID()),
 			QueueDepth:        inst.QueueDepth(),
 			BatchSize:         inst.BatchSize(),

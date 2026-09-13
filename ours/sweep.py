@@ -108,6 +108,8 @@ def main():
                     help="analysis: ignore requests arriving in the last tail-s seconds")
     ap.add_argument("--state-sample-ms", type=int, default=0,
                     help="write per-instance state every N ms of simulated time (0 = off)")
+    ap.add_argument("--state-snapshot-s", type=float, default=0.0,
+                    help="write the per-request queue and batch composition every N s (0 = off; multiple of state-sample-ms)")
     ap.add_argument("--profile", choices=sorted(PROFILES), default="B1",
                     help="configuration profile, see PROFILES (default B1, llm-d production default)")
     ap.add_argument("--spec", default=os.path.join(HERE, "specs", "types3.yaml"))
@@ -132,13 +134,15 @@ def main():
     mode_flags = ["--horizon", str(int(round(a.horizon_s * 1e6)))] if fixed else []
     if a.state_sample_ms > 0:
         mode_flags += ["--state-sample-interval", str(a.state_sample_ms * 1000)]
+    if a.state_snapshot_s > 0:
+        mode_flags += ["--state-snapshot-interval", str(int(round(a.state_snapshot_s * 1e6)))]
 
     manifest = {
         "name": a.name, "date": date, "commit": git_commit(), "binary": BIN,
         "mode": "fixed-horizon" if fixed else "drain",
         "horizon_s": a.horizon_s, "num_requests": None if fixed else a.num_requests,
         "warmup_s": a.warmup_s, "tail_s": a.tail_s,
-        "state_sample_ms": a.state_sample_ms,
+        "state_sample_ms": a.state_sample_ms, "state_snapshot_s": a.state_snapshot_s,
         "blocks": a.blocks, "profile": a.profile,
         "base_flags": BASE_FLAGS + PROFILES[a.profile] + mode_flags,
         "extra_flags": a.extra,

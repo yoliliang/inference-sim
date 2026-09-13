@@ -436,6 +436,22 @@ func (sim *Simulator) buildInstanceSnapshot() InstanceSnapshot {
 	}
 }
 
+// RequestSnapshots returns the wait queue and running batch composition (ours, read-only).
+func (sim *Simulator) RequestSnapshots() []RequestSnapshot {
+	out := make([]RequestSnapshot, 0, sim.WaitQ.Len()+sim.BatchSize())
+	for _, r := range sim.WaitQ.Items() {
+		out = append(out, RequestSnapshot{ID: r.ID, TenantID: r.TenantID, State: "queued",
+			InputTokens: r.InputLen(), ProgressTokens: r.ProgressIndex})
+	}
+	if sim.RunningBatch != nil {
+		for _, r := range sim.RunningBatch.Requests {
+			out = append(out, RequestSnapshot{ID: r.ID, TenantID: r.TenantID, State: "running",
+				InputTokens: r.InputLen(), ProgressTokens: r.ProgressIndex})
+		}
+	}
+	return out
+}
+
 // QueueDepth returns the number of requests in the wait queue.
 func (sim *Simulator) QueueDepth() int { return sim.WaitQ.Len() }
 

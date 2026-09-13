@@ -22,9 +22,14 @@ import (
 )
 
 var (
-	stateSampleInterval int64  // ours: --state-sample-interval, microseconds, 0 = off
-	stateSamplePath     string // ours: --state-sample-path
+	stateSampleInterval   int64  // ours: --state-sample-interval, microseconds, 0 = off
+	stateSamplePath       string // ours: --state-sample-path
+	stateSnapshotInterval int64  // ours: --state-snapshot-interval, microseconds, 0 = off
 )
+
+var stateSnapshotHeader = []string{
+	"clock_us", "instance", "requestID", "tenant_id", "state", "input_tokens", "progress_tokens",
+}
 
 var stateSampleHeader = []string{
 	"clock_us", "instance", "queue_depth", "batch_size",
@@ -34,24 +39,59 @@ var stateSampleHeader = []string{
 }
 
 type stateSampler struct {
-	f *os.File
-	w *csv.Writer
+	f                *os.File // state rows (nil when state sampling is off)
+	w                *csv.Writer
+	sf               *os.File // snapshot rows (nil when snapshots are off)
+	sw               *csv.Writer
+	snapshotInterval int64
+	nextSnapshotUs   int64
 }
 
-func newStateSampler(path string) (*stateSampler, error) {
-	f, err := os.Create(path)
-	if err != nil {
-		return nil, err
+// newStateSampler opens the state csv (statePath, may be empty) and the snapshot csv
+// (snapshotPath, may be empty). At least one must be given.
+func newStateSampler(statePath, snapshotPath string, snapshotInterval int64) (*stateSampler, error) {
+	s := &stateSampler{snapshotInterval: snapshotInterval, nextSnapshotUs: snapshotInterval}
+	if statePath != "" {
+		f, err := os.Create(statePath)
+		if err != nil {
+			return nil, err
+		}
+		s.f, s.w = f, csv.NewWriter(f)
+		if err := s.w.Write(stateSampleHeader); err != nil {
+			return nil, err
+		}
 	}
-	w := csv.NewWriter(f)
-	if err := w.Write(stateSampleHeader); err != nil {
-		f.Close()
-		return nil, err
+	if snapshotPath != "" {
+		f, err := os.Create(snapshotPath)
+		if err != nil {
+			return nil, err
+		}
+		s.sf, s.sw = f, csv.NewWriter(f)
+		if err := s.sw.Write(stateSnapshotHeader); err != nil {
+			return nil, err
+		}
 	}
-	return &stateSampler{f: f, w: w}, nil
+	return s, nil
 }
 
 func (s *stateSampler) OnProgress(snap sim.ProgressSnapshot) {
+	if s.sw != nil && (snap.IsFinal || snap.Clock >= s.nextSnapshotUs) {
+		for _, inst := range snap.InstanceSnapshots {
+			for _, r := range inst.Requests {
+				row := []string{strconv.FormatInt(snap.Clock, 10), inst.ID, r.ID, r.TenantID, r.State,
+					strconv.FormatInt(r.InputTokens, 10), strconv.FormatInt(r.ProgressTokens, 10)}
+				if err := s.sw.Write(row); err != nil {
+					logrus.Errorf("state snapshot write failed: %v", err)
+				}
+			}
+		}
+		for !snap.IsFinal && s.nextSnapshotUs <= snap.Clock {
+			s.nextSnapshotUs += s.snapshotInterval
+		}
+	}
+	if s.w == nil {
+		return
+	}
 	for _, inst := range snap.InstanceSnapshots {
 		row := []string{
 			strconv.FormatInt(snap.Clock, 10),
@@ -76,12 +116,43 @@ func (s *stateSampler) OnProgress(snap sim.ProgressSnapshot) {
 }
 
 func (s *stateSampler) Close() error {
-	s.w.Flush()
-	if err := s.w.Error(); err != nil {
-		s.f.Close()
-		return err
+	var firstErr error
+	for _, p := range []struct {
+		w *csv.Writer
+		f *os.File
+	}{{s.w, s.f}, {s.sw, s.sf}} {
+		if p.w == nil {
+			continue
+		}
+		p.w.Flush()
+		if err := p.w.Error(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		if err := p.f.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
-	return s.f.Close()
+	return firstErr
+}
+
+// resolveSnapshotPath returns the snapshot csv path (empty when off). The snapshot
+// interval must be a positive multiple of the state interval when both are set,
+// because both ride the same progress hook.
+func resolveSnapshotPath(snapshotInterval, stateInterval int64, statePath, metrics string) (string, error) {
+	if snapshotInterval <= 0 {
+		return "", nil
+	}
+	if stateInterval > 0 && snapshotInterval%stateInterval != 0 {
+		return "", fmt.Errorf("--state-snapshot-interval must be a multiple of --state-sample-interval")
+	}
+	base := statePath
+	if base == "" {
+		if metrics == "" {
+			return "", fmt.Errorf("--state-snapshot-interval requires --metrics-path or --state-sample-path")
+		}
+		base = strings.TrimSuffix(metrics, ".json") + "_state.csv"
+	}
+	return strings.TrimSuffix(base, "_state.csv") + "_snapshot.csv", nil
 }
 
 // resolveStateSamplePath returns the CSV path for state sampling, or an error

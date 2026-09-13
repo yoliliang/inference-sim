@@ -2616,17 +2616,29 @@ var runCmd = &cobra.Command{
 		}
 		cs := cluster.NewClusterSimulator(config, clusterRequestSource, onRequestDone)
 
-		// ours: periodic instance-state sampling (read-only hook, INV-6 safe).
+		// ours: periodic instance-state sampling and request snapshots (read-only hook, INV-6 safe).
 		var sampler *stateSampler
-		if samplePath, err := resolveStateSamplePath(stateSampleInterval, stateSamplePath, metricsPath); err != nil {
+		samplePath, err := resolveStateSamplePath(stateSampleInterval, stateSamplePath, metricsPath)
+		if err != nil {
 			logrus.Fatalf("%v", err)
-		} else if samplePath != "" {
-			sampler, err = newStateSampler(samplePath)
+		}
+		snapshotPath, err := resolveSnapshotPath(stateSnapshotInterval, stateSampleInterval, samplePath, metricsPath)
+		if err != nil {
+			logrus.Fatalf("%v", err)
+		}
+		if samplePath != "" || snapshotPath != "" {
+			sampler, err = newStateSampler(samplePath, snapshotPath, stateSnapshotInterval)
 			if err != nil {
 				logrus.Fatalf("state sampler: %v", err)
 			}
-			cs.SetProgressHook(sampler, stateSampleInterval)
-			logrus.Infof("State sampling every %d us to %s", stateSampleInterval, samplePath)
+			hookInterval := stateSampleInterval
+			if hookInterval <= 0 {
+				hookInterval = stateSnapshotInterval
+			}
+			cs.SetProgressHook(sampler, hookInterval)
+			cs.SetProgressRequestDetail(snapshotPath != "")
+			logrus.Infof("State sampling every %d us to %q, request snapshots every %d us to %q",
+				stateSampleInterval, samplePath, stateSnapshotInterval, snapshotPath)
 		}
 
 		// Arrival hook: capture trace-emission references at the cluster's
@@ -3098,6 +3110,7 @@ func init() {
 	runCmd.Flags().StringVar(&traceOutput, "trace-output", "", "Export workload as TraceV2 files (<prefix>.yaml + <prefix>.csv)")
 	runCmd.Flags().Int64Var(&stateSampleInterval, "state-sample-interval", 0, "ours: write one CSV row per instance every N microseconds of simulated time (0 = off)")
 	runCmd.Flags().StringVar(&stateSamplePath, "state-sample-path", "", "ours: CSV path for --state-sample-interval (default: <metrics-path>_state.csv)")
+	runCmd.Flags().Int64Var(&stateSnapshotInterval, "state-snapshot-interval", 0, "ours: write the per-request composition of every instance's queue and batch every N microseconds to <metrics-path>_snapshot.csv (0 = off; a multiple of --state-sample-interval when both are set)")
 	runCmd.Flags().StringVar(&metricsPath, "metrics-path", "", "File to write MetricsOutput JSON (aggregate P50/P95/P99 TTFT, E2E, throughput stats). Use --results-path on blis replay for per-request SimResult JSON.")
 
 	// Saturation trace flags (#1516): --detectors + --saturation-config + --saturation-report.

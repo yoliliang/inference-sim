@@ -16,6 +16,11 @@ Branch: ours
 - sim/simulator.go: per-request PreemptionCount / WastedTokens accumulated where Metrics.PreemptionCount is incremented
 - sim/cluster/cluster.go: +rejectedRequestMetrics on ClusterSimulator; aggregateMetrics copies it into merged.ExtraRequests
 - sim/cluster/cluster_event.go: admission rejection appends a RequestMetrics row with status rejected
+- sim/progress_hook.go: +RequestSnapshot type and InstanceSnapshot.Requests (nil unless requested)
+- sim/simulator.go (second item): +Simulator.RequestSnapshots() read-only accessor over WaitQ and RunningBatch
+- sim/cluster/instance.go: +InstanceSimulator.RequestSnapshots() wrapper
+- sim/cluster/cluster.go (second item): +progressRequestDetail flag, SetProgressRequestDetail; maybeDeliverProgressSnapshot fills Requests when on
+- cmd/state_sample.go, cmd/root.go: +--state-snapshot-interval writing <metrics-path>_snapshot.csv
 
 ## Files added (ours)
 

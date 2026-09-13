@@ -169,6 +169,11 @@ func (i *InstanceSimulator) BatchSize() int {
 	return i.sim.BatchSize()
 }
 
+// RequestSnapshots returns the queue and batch composition (ours, read-only).
+func (i *InstanceSimulator) RequestSnapshots() []sim.RequestSnapshot {
+	return i.sim.RequestSnapshots()
+}
+
 // ResidentAdapterIDs returns the ids of LoRA adapters currently resident on this
 // instance, or nil when the LoRA subsystem is inert. Read by the snapshot provider
 // to populate RoutingSnapshot.ResidentAdapters for the lora-affinity scorer (#1469).
