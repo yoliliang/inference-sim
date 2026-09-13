@@ -3,11 +3,13 @@
 package sim
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"os"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/sirupsen/logrus"
 )
@@ -304,8 +306,27 @@ func (m *Metrics) EmitOutput(output MetricsOutput, outputFilePath string) error 
 			return fmt.Errorf("error marshalling metrics to JSON: %w", err)
 		}
 
-		writeErr := os.WriteFile(outputFilePath, data, 0644)
-		if writeErr != nil {
+		// ours: a path ending in .gz is written gzip-compressed (same JSON inside).
+		// Plain .json writes of tens of MB are scanned on this machine and take
+		// tens of seconds; the gzipped file is a tenth of the size and not scanned.
+		if strings.HasSuffix(outputFilePath, ".gz") {
+			f, err := os.Create(outputFilePath)
+			if err != nil {
+				return fmt.Errorf("error creating gzip file: %w", err)
+			}
+			zw := gzip.NewWriter(f)
+			if _, err := zw.Write(data); err != nil {
+				f.Close()
+				return fmt.Errorf("error writing gzip file: %w", err)
+			}
+			if err := zw.Close(); err != nil {
+				f.Close()
+				return fmt.Errorf("error closing gzip stream: %w", err)
+			}
+			if err := f.Close(); err != nil {
+				return fmt.Errorf("error closing gzip file: %w", err)
+			}
+		} else if writeErr := os.WriteFile(outputFilePath, data, 0644); writeErr != nil {
 			return fmt.Errorf("error writing JSON file: %w", writeErr)
 		}
 		logrus.Infof("Metrics written to: %s", outputFilePath)

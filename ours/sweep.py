@@ -180,11 +180,8 @@ def main():
             rc = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.DEVNULL, stderr=lf).returncode
         if rc != 0 or not os.path.exists(out):
             return tag, False, f"FAILED {tag} (rc={rc}), see {log}"
-        m = json.load(open(out))
-        # gzip the per-request json (about 350 bytes per request uncompressed)
-        with gzip.open(out + ".gz", "wt", encoding="utf-8") as gz:
-            json.dump(m, gz)
-        os.remove(out)
+        with gzip.open(out, "rt", encoding="utf-8") as gz:  # BLIS wrote the json gzipped (fork feature)
+            m = json.load(gz)
         unfinished = m["still_queued"] + m["still_running"]
         return tag, True, (f"{tag:<14} injected={m['injected_requests']:6d} unfinished={unfinished:5d} "
                            f"preempt={m['preemption_count']:5d} ttft_p99={m['ttft_p99_ms']:9,.0f} "
@@ -196,7 +193,7 @@ def main():
         write_spec(a.spec, spec, rate, 0 if fixed else a.num_requests)
         for seed in seeds:
             tag = f"{rtag}_s{seed}"
-            out = os.path.join(exp, "runs", tag + ".json")
+            out = os.path.join(exp, "runs", tag + ".json.gz")  # written gzipped by BLIS
             log = os.path.join(exp, "runs", tag + ".log")
             cmd = [BIN, "run", *BASE_FLAGS, "--num-instances", str(n_inst), *PROFILES[a.profile], *mode_flags,
                    "--workload-spec", spec,
@@ -206,7 +203,7 @@ def main():
             if a.dry_run:
                 print(" ".join(cmd))
                 continue
-            if a.resume and os.path.exists(out + ".gz"):
+            if a.resume and os.path.exists(out):
                 n_ok += 1
                 continue
             jobs.append((tag, cmd, out, log))
