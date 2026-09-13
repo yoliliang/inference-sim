@@ -117,6 +117,7 @@ type ClusterSimulator struct {
 	// Phase 1C: model autoscaler pipeline. Nil when ModelAutoscalerIntervalUs == 0 (backward-compat, INV-6).
 	autoscaler      *autoscalerPipeline
 	pendingArrivals int // count of ClusterArrivalEvents not yet executed; used by scheduleNextTick to stop ticking when all work is done
+	moreArrivals    bool // ours: the request source still holds arrivals not yet pulled into the event heap
 
 	// sessionCallback is the raw onRequestDone parameter for session follow-up
 	// generation in PD mode. Called from detectDecodeCompletions with the original
@@ -649,6 +650,14 @@ func NewClusterSimulator(config DeploymentConfig, requestSource RequestSource, o
 	// admission → routing → instance injection. The callback returns nil so the per-instance
 	// simulator does not inject locally.
 	// Phase 1B-2a: also notify tenantTracker on completion when budgets are configured.
+	if config.ReleaseCompletedRequests { // ours: memory-lean mode
+		for _, inst := range cs.instances {
+			if inst.sim != nil {
+				inst.sim.ReleaseCompleted = true
+				inst.sim.Metrics.ITLCounts = make(map[int64]int64)
+			}
+		}
+	}
 	if onRequestDone != nil || cs.tenantTracker != nil || cs.evictionTracker != nil {
 		for _, inst := range cs.instances {
 			inst.sim.OnRequestDone = func(req *sim.Request, tick int64) []*sim.Request {
@@ -805,20 +814,31 @@ func (c *ClusterSimulator) Run() error {
 	// required to yield in non-decreasing ArrivalTime order (RequestSource
 	// contract — caller obligation, not verified here); we count emissions to
 	// preserve today's "no requests" warning.
+	// ours: arrivals are pulled from the source as the clock advances instead of being
+	// drained into the event heap up front, so memory holds the in-flight requests and
+	// not every future arrival (with token arrays, 10 KB each). Event order is unchanged:
+	// the source yields in non-decreasing ArrivalTime, an arrival is pushed before any
+	// event with a later timestamp is executed, and arrival events carry the lowest
+	// priority class so ties with other events at the same timestamp are unaffected.
 	arrivalCount := 0
-	for {
-		req, ok := c.requestSource.Next()
-		if !ok {
-			break
-		}
-		if req == nil {
-			panic("ClusterSimulator: RequestSource.Next() returned (nil, true) — implementation contract violation (Next must never return ok=true with a nil request)")
-		}
-		c.pushArrival(req, req.ArrivalTime)
-		arrivalCount++
+	nextReq, hasNext := c.requestSource.Next()
+	c.moreArrivals = hasNext
+	if hasNext && nextReq == nil {
+		panic("ClusterSimulator: RequestSource.Next() returned (nil, true) — implementation contract violation (Next must never return ok=true with a nil request)")
 	}
-	if arrivalCount == 0 {
+	if !hasNext {
 		logrus.Warn("[cluster] no requests provided — simulation will produce zero results")
+	}
+	pullArrivals := func(upTo int64) {
+		for hasNext && nextReq.ArrivalTime <= upTo {
+			c.pushArrival(nextReq, nextReq.ArrivalTime)
+			arrivalCount++
+			nextReq, hasNext = c.requestSource.Next()
+			c.moreArrivals = hasNext
+			if hasNext && nextReq == nil {
+				panic("ClusterSimulator: RequestSource.Next() returned (nil, true) — implementation contract violation (Next must never return ok=true with a nil request)")
+			}
+		}
 	}
 
 	// 3. Shared-clock event loop (BC-4: cluster events before instance events)
@@ -839,6 +859,19 @@ func (c *ClusterSimulator) Run() error {
 					instanceTime = t
 					instanceIdx = idx
 				}
+			}
+		}
+
+		// ours: admit every pending arrival up to the next event time (at least one when
+		// both queues are empty), then re-read the earliest cluster event.
+		if hasNext {
+			upTo := min(clusterTime, instanceTime)
+			if upTo == math.MaxInt64 {
+				upTo = nextReq.ArrivalTime
+			}
+			if nextReq.ArrivalTime <= upTo {
+				pullArrivals(upTo)
+				clusterTime = c.clusterEvents[0].event.Timestamp()
 			}
 		}
 
@@ -1807,6 +1840,14 @@ func (c *ClusterSimulator) aggregateMetrics() *sim.Metrics {
 				logrus.Warnf("aggregateMetrics: duplicate request ID %q in Requests", k)
 			}
 			merged.Requests[k] = v
+		}
+		if m.ITLCounts != nil { // ours: compact ITL storage
+			if merged.ITLCounts == nil {
+				merged.ITLCounts = make(map[int64]int64, len(m.ITLCounts))
+			}
+			for v, c := range m.ITLCounts {
+				merged.ITLCounts[v] += c
+			}
 		}
 		merged.AllITLs = append(merged.AllITLs, m.AllITLs...)
 		merged.RequestStepCounters = append(merged.RequestStepCounters, m.RequestStepCounters...)

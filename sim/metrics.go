@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"slices"
 	"sort"
@@ -41,6 +42,11 @@ type Metrics struct {
 	RequestITLs             map[string]float64 // list of all requests' ITL
 	RequestSchedulingDelays map[string]int64   // list of all requests' scheduling delays
 	AllITLs                 []int64            // list of all requests' ITL
+	// ours: when non-nil, ITL samples are kept as value counts instead of in AllITLs.
+	// The mean and percentiles computed from the counts are identical to the ones
+	// computed from the sorted slice (same summation order, same order statistics),
+	// while memory is bounded by the number of distinct step times, not by tokens.
+	ITLCounts map[int64]int64
 	RequestE2Es             map[string]float64 // list of all requests' latencies
 	RequestCompletionTimes  map[string]float64 // list of all requests' completion times in ticks
 	RequestStepCounters     []int              // list of all requests' num of steps between scheduled and finished
@@ -145,11 +151,15 @@ func (m *Metrics) BuildOutput(instanceID string) MetricsOutput {
 		output.E2EP99Ms = CalculatePercentile(sortedE2Es, 99)
 
 		// --- ITL Calculations ---
-		slices.Sort(m.AllITLs)
-		output.ITLMeanMs = CalculateMean(m.AllITLs)
-		output.ITLP90Ms = CalculatePercentile(m.AllITLs, 90)
-		output.ITLP95Ms = CalculatePercentile(m.AllITLs, 95)
-		output.ITLP99Ms = CalculatePercentile(m.AllITLs, 99)
+		if m.ITLCounts != nil { // ours: compact form
+			output.ITLMeanMs, output.ITLP90Ms, output.ITLP95Ms, output.ITLP99Ms = itlStatsFromCounts(m.ITLCounts)
+		} else {
+			slices.Sort(m.AllITLs)
+			output.ITLMeanMs = CalculateMean(m.AllITLs)
+			output.ITLP90Ms = CalculatePercentile(m.AllITLs, 90)
+			output.ITLP95Ms = CalculatePercentile(m.AllITLs, 95)
+			output.ITLP99Ms = CalculatePercentile(m.AllITLs, 99)
+		}
 
 		// --- P99 Scheduling Delay ---
 		sortedSchedulingDelays := make([]float64, 0, len(m.RequestSchedulingDelays))
@@ -351,6 +361,65 @@ func (m *Metrics) EmitOutput(output MetricsOutput, outputFilePath string) error 
 		logrus.Infof("Metrics written to: %s", outputFilePath)
 	}
 	return nil
+}
+
+// AddITLs records a completed request's inter-token latencies (ours): value counts
+// when ITLCounts is set, the AllITLs slice otherwise.
+func (m *Metrics) AddITLs(itl []int64) {
+	if m.ITLCounts != nil {
+		for _, v := range itl {
+			m.ITLCounts[v]++
+		}
+		return
+	}
+	m.AllITLs = append(m.AllITLs, itl...)
+}
+
+// itlStatsFromCounts reproduces CalculateMean and CalculatePercentile on the sorted
+// sample exactly, from (value, count) pairs (ours).
+func itlStatsFromCounts(counts map[int64]int64) (mean, p90, p95, p99 float64) {
+	vals := make([]int64, 0, len(counts))
+	var n int64
+	for v, c := range counts {
+		vals = append(vals, v)
+		n += c
+	}
+	if n == 0 {
+		return 0, 0, 0, 0
+	}
+	slices.Sort(vals)
+	sum := 0.0
+	for _, v := range vals { // same left-to-right float64 accumulation as CalculateMean
+		f := float64(v)
+		for c := counts[v]; c > 0; c-- {
+			sum += f
+		}
+	}
+	mean = sum / float64(n) / 1000
+	at := func(idx int64) int64 { // value of the idx-th order statistic (0-based)
+		var cum int64
+		for _, v := range vals {
+			cum += counts[v]
+			if idx < cum {
+				return v
+			}
+		}
+		return vals[len(vals)-1]
+	}
+	pct := func(p float64) float64 {
+		rank := p / 100.0 * float64(n-1)
+		lowerIdx := int64(math.Floor(rank))
+		upperIdx := int64(math.Ceil(rank))
+		if lowerIdx == upperIdx {
+			return float64(at(lowerIdx)) / 1000
+		}
+		lowerVal, upperVal := at(lowerIdx), at(upperIdx)
+		if upperIdx >= n {
+			return float64(at(n-1)) / 1000
+		}
+		return float64(lowerVal)/1000 + float64(upperVal-lowerVal)*(rank-float64(lowerIdx))/1000
+	}
+	return mean, pct(90), pct(95), pct(99)
 }
 
 // SaveResults computes aggregate metrics and emits them to stdout and an optional

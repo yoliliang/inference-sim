@@ -353,7 +353,7 @@ func (p *autoscalerPipeline) tick(cs *ClusterSimulator, nowUs int64) {
 // pendingArrivals++ as a single operation. <= 0 ensures the guard fires even
 // if a future push site bypasses pushArrival and misses the increment.
 func (p *autoscalerPipeline) scheduleNextTick(cs *ClusterSimulator, nowUs int64) {
-	if cs.config.Horizon == math.MaxInt64 && cs.pendingArrivals <= 0 {
+	if cs.config.Horizon == math.MaxInt64 && cs.pendingArrivals <= 0 && !cs.moreArrivals { // ours: arrivals are pulled lazily
 		var inFlight int
 		for _, v := range cs.inFlightRequests {
 			inFlight += v

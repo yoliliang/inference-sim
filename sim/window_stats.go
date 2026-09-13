@@ -100,7 +100,8 @@ func (m *Metrics) WindowStats(startS, endS, horizonS float64) *WindowStats {
 			}
 		}
 	}
-	for id, rm := range m.Requests {
+	for _, id := range sortedRequestIDs(m.Requests) { // sorted: deterministic float sums
+		rm := m.Requests[id]
 		if rm.ArrivedAt < startS || rm.ArrivedAt >= endS {
 			continue
 		}

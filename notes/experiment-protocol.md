@@ -58,7 +58,7 @@ row comes first.
 
 1. State the question in one sentence (`--question`); it becomes section 1 of the PDF.
 2. Pick the profile, memory regime, grid, seeds, horizon and window from the table above.
-3. Run `python ours/sweep.py ... --jobs N`. It writes the manifest, runs the sample paths N at a time (one BLIS process per path, default half the logical cores), gzips the json,
+3. Run `python ours/sweep.py ... --jobs N`. It writes the manifest and runs the sample paths N at a time (one BLIS process per path, default half the logical cores, fewer at large n so that concurrent runs stay inside 24 GB: a 1,200 s path needs about 0.055 GB per instance). Every run uses the memory-lean flags (lazy generation, release of completed requests, ITL counts), which are byte-identical to the plain path. BLIS writes the gzipped metrics file with the window block;
    runs analyze.py.
 4. If prices are set, run `python ours/objective.py <folder>`.
 5. Write the interpretation into README.md under a "## Interpretation" heading, then

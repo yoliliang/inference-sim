@@ -27,6 +27,12 @@ Branch: ours
 - sim/kv/cache.go: incremental snapshot of HashToBlock (setHash, delHash, refreshSnapshot); SnapshotCachedBlocksFn replays a change log instead of copying the whole map at every refresh. Same frozen-copy semantics, stdout byte-identical, 4.5x faster on the B1 profile at scale
 - sim/kv/offload_chain.go, sim/kv/tiered.go: HashToBlock writes routed through setHash / delHash
 - main.go: BLIS_CPUPROFILE environment variable starts a CPU profile (diagnostic only)
+- sim/simulator.go (third item): +Simulator.ReleaseCompleted; completed requests drop InputTokens, OutputTokens and ITL after all bookkeeping; recordRequestCompletion calls Metrics.AddITLs
+- sim/metrics.go (third item): +Metrics.ITLCounts (value counts instead of the AllITLs slice when set), AddITLs, itlStatsFromCounts reproducing CalculateMean and CalculatePercentile exactly
+- sim/cluster/cluster.go (third item): arrivals are pulled from the RequestSource as the clock advances instead of being drained into the event heap up front (+moreArrivals); lean-mode setup of instances; ITLCounts merge in aggregateMetrics
+- sim/cluster/autoscaler.go: tick guard also checks moreArrivals
+- sim/cluster/deployment.go: +ReleaseCompletedRequests
+- cmd/root.go, cmd/state_sample.go (third item): +--release-completed-requests (refused with --trace-output); BLIS_MEMPROFILE heap profile hook
 
 ## Files added (ours)
 

@@ -43,7 +43,16 @@ import analyze  # noqa: E402
 
 BASE_FLAGS = [
     "--model", "qwen/qwen3-14b", "--hardware", "H100", "--tp", "1",
+    # memory-lean execution, byte-identical results (fork features): requests are generated
+    # and pulled as the clock advances, completed requests drop their token arrays, ITL
+    # samples are kept as counts
+    "--lazy-generation", "--release-completed-requests",
 ]
+
+# Peak private memory per run is about 0.055 GB per instance at 1,200 s; keep the
+# concurrent runs of one grid point inside this budget.
+MEM_BUDGET_GB = 24.0
+MEM_GB_PER_INSTANCE = 0.055
 
 # Configuration profiles (notes/benchmark-brief.md section 1). Each profile fixes the
 # gateway and engine controls; --blocks, rate, seed and horizon are set per run.
@@ -124,7 +133,8 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-analyze", action="store_true")
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) // 2),
-                    help="sample paths to run concurrently, one BLIS process each (default: half the logical cores)")
+                    help="sample paths to run concurrently, one BLIS process each (default: half the logical cores); "
+                         "reduced per grid point so that concurrent runs fit MEM_BUDGET_GB")
     ap.add_argument("--resume", action="store_true",
                     help="skip runs whose .json.gz already exists (keeps the existing manifest)")
     ap.add_argument("extra", nargs="*", help="extra BLIS flags after --")
@@ -181,7 +191,7 @@ def main():
 
     def run_one(job):
         """Run one sample path in its own BLIS process; returns (tag, ok, summary line)."""
-        tag, cmd, out, log = job
+        tag, cmd, out, log, _ = job
         with open(log, "w") as lf:
             rc = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.DEVNULL, stderr=lf).returncode
         if rc != 0 or not os.path.exists(out):
@@ -214,20 +224,27 @@ def main():
             if a.resume and os.path.exists(out):
                 n_ok += 1
                 continue
-            jobs.append((tag, cmd, out, log))
+            jobs.append((tag, cmd, out, log, n_inst))
 
     if jobs:
-        print(f"{len(jobs)} sample paths, {a.jobs} at a time", flush=True)
-        t0, finished = time.time(), 0
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, a.jobs)) as pool:
-            for tag, ok, line in pool.map(run_one, jobs):
-                finished += 1
-                n_ok += ok
-                elapsed = time.time() - t0
-                eta = elapsed / finished * (len(jobs) - finished)
-                k = int(30 * finished / len(jobs))
-                print(f"[{'#' * k}{'.' * (30 - k)}] {finished}/{len(jobs)}  {elapsed / 60:.0f} min elapsed, "
-                      f"about {eta / 60:.0f} min left    {line}", flush=True)
+        work_total = sum(j[4] for j in jobs)  # one path's cost grows with n
+        print(f"{len(jobs)} sample paths, up to {a.jobs} at a time (fewer at large n to fit memory)", flush=True)
+        t0, finished, work_done = time.time(), 0, 0
+        groups = {}
+        for j in jobs:
+            groups.setdefault(j[4], []).append(j)
+        for n_inst in sorted(groups):
+            workers = max(1, min(a.jobs, int(MEM_BUDGET_GB // (MEM_GB_PER_INSTANCE * n_inst))))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+                for tag, ok, line in pool.map(run_one, groups[n_inst]):
+                    finished += 1
+                    work_done += n_inst
+                    n_ok += ok
+                    elapsed = time.time() - t0
+                    eta = elapsed / work_done * (work_total - work_done)
+                    k = int(30 * finished / len(jobs))
+                    print(f"[{'#' * k}{'.' * (30 - k)}] {finished}/{len(jobs)}  {elapsed / 60:.0f} min elapsed, "
+                          f"about {eta / 60:.0f} min left    {line}", flush=True)
 
     if a.dry_run:
         return

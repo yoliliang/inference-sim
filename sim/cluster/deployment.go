@@ -30,6 +30,7 @@ type DeploymentConfig struct {
 	// Decision trace configuration (PR13)
 	TraceLevel      string // "none" (default), "decisions"
 	CounterfactualK int    // number of counterfactual candidates, default 0
+	ReleaseCompletedRequests bool // ours: drop token and ITL slices of completed requests (memory), see Simulator.ReleaseCompleted
 
 	// Snapshot staleness configuration (H3 experiment, unified in #463)
 	// When > 0, all Prometheus-sourced signals (QueueDepth, BatchSize, KVUtilization)

@@ -25,6 +25,7 @@ var (
 	windowStartS          float64 // ours: --window-start, seconds
 	windowEndS            float64 // ours: --window-end, seconds (0 = no window block)
 	dropPerRequestOutput  bool    // ours: --drop-per-request-output
+	releaseCompleted      bool    // ours: --release-completed-requests
 	stateSampleInterval   int64   // ours: --state-sample-interval, microseconds, 0 = off
 	stateSamplePath       string  // ours: --state-sample-path
 	stateSnapshotInterval int64   // ours: --state-snapshot-interval, microseconds, 0 = off

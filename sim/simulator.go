@@ -150,6 +150,12 @@ type Simulator struct {
 	// Set by the caller (cmd/root.go or ClusterSimulator). Nil = no callback.
 	OnRequestDone func(req *Request, tick int64) []*Request
 
+	// ours: when set, a completed request drops its token and ITL slices once every
+	// completion bookkeeping has run, so memory no longer grows with the number of
+	// completed requests. Off by default; incompatible with trace export, which reads
+	// OutputTokens at the end of the run.
+	ReleaseCompleted bool
+
 	progressHook               ProgressHook
 	simClockProgressIntervalUs int64
 	nextSnapshotClockUs        int64
@@ -818,7 +824,7 @@ func (sim *Simulator) recordRequestCompletion(req *Request) {
 	}
 	sim.Metrics.RequestStepCounters = append(sim.Metrics.RequestStepCounters, req.FinishedStepIdx-req.ScheduledStepIdx)
 	sim.Metrics.RequestCompletionTimes[req.ID] = float64(lat + req.ArrivalTime)
-	sim.Metrics.AllITLs = append(sim.Metrics.AllITLs, req.ITL...)
+	sim.Metrics.AddITLs(req.ITL) // ours: counts when compact ITL storage is on
 	// Terminal state: reset the spec-decode carry so no stale fraction survives if
 	// this Request struct is ever reused (#1528). No-op when the feature is off.
 	req.specDecodeCarry = 0
@@ -1201,6 +1207,7 @@ func (sim *Simulator) processCompletions(now, currStepAdvance int64) []*Request 
 					sim.InjectArrival(next)
 				}
 			}
+			sim.releaseCompleted(req) // ours
 		} else if sim.maxModelLen > 0 && req.ProgressIndex >= sim.maxModelLen-1 {
 			// BC-5: Proactive MaxModelLen cap — force-complete at boundary.
 			// After the proactive cap in FormBatch prevents scheduling tokens beyond
@@ -1242,11 +1249,22 @@ func (sim *Simulator) processCompletions(now, currStepAdvance int64) []*Request 
 					sim.InjectArrival(next)
 				}
 			}
+			sim.releaseCompleted(req) // ours
 		} else {
 			remaining = append(remaining, req)
 		}
 	}
 	return remaining
+}
+
+// releaseCompleted drops the large per-request slices of a finished request (ours).
+func (sim *Simulator) releaseCompleted(req *Request) {
+	if !sim.ReleaseCompleted {
+		return
+	}
+	req.InputTokens = nil
+	req.OutputTokens = nil
+	req.ITL = nil
 }
 
 // scheduleNextStep handles Phase 4: schedules the next step event based on
