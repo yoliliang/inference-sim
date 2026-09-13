@@ -265,7 +265,7 @@ def build(exp):
         png = f"runs/rate{rate:g}_s{first_seed}_panel.png"  # forward slash: LaTeX path
         if os.path.exists(os.path.join(exp, png)):
             appendix.append(
-                rf"egin{{figure}}[p]\centering\includegraphics[width=\linewidth]{{{png}}}"
+                rf"\begin{{figure}}[p]\centering\includegraphics[width=\linewidth]{{{png}}}"
                 rf"\caption{{Sample path at rate {rate:g} req/s, seed {first_seed}: latency densities, queue wait against "
                 r"arrival time, KV occupancy, queue and batch sizes, evictions per second. Dashed lines mark the window.}\end{figure}")
 
