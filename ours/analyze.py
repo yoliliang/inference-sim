@@ -106,6 +106,8 @@ def group_metrics(g, window_len):
         "unfinished_frac": (g.status == "unfinished").mean() if n else np.nan,
         "rejected_frac": (g.status == "rejected").mean() if n else np.nan,
         "preempt_per_arrival": g.preemption_count.sum() / n if n else np.nan,
+        "preempt_per_completed": g.preemption_count.sum() / len(done) if len(done) else np.nan,
+        "preempt_per_s": g.preemption_count.sum() / window_len if window_len > 0 else np.nan,
         "wasted_tok_per_arrival": g.wasted_tokens.sum() / n if n else np.nan,
         "output_tok_per_s": done.num_decode_tokens.sum() / window_len if window_len > 0 else np.nan,
     }
@@ -270,19 +272,19 @@ def panel_plot(df, state, preempt, warm, end, out_png, title):
 
 
 def sweep_plot(summary, out_png, title):
-    panels = [
-        ("delay_mean_ms", "mean queue wait, ms", True),
-        ("ttft_p99_ms", "time to first token p99, ms", True),
-        ("preempt_per_arrival", "preemptions per arrival", False),
-        ("unfinished_frac", "unfinished at horizon, fraction of window arrivals", False),
+    panels = [  # (metric, label, log y, scale factor applied to the values)
+        ("delay_mean_ms", "mean queue wait, s", True, 1e-3),
+        ("ttft_p99_ms", "time to first token p99, s", True, 1e-3),
+        ("preempt_per_s", "evictions per second (whole cluster)", False, 1.0),
+        ("unfinished_frac", "unfinished at horizon, percent of window arrivals", False, 100.0),
     ]
     fig, axes = plt.subplots(2, 2, figsize=(12, 8), dpi=130)
-    for ax, (m, label, logy) in zip(axes.flat, panels):
+    for ax, (m, label, logy, k) in zip(axes.flat, panels):
         for t in TYPES + ["all"]:
             s = summary[summary["type"] == t].sort_values("rate")
             if s.empty:
                 continue
-            ax.errorbar(s.rate, s[f"{m}_mean"], yerr=s[f"{m}_ci95"], marker="o", ms=4, lw=1.5,
+            ax.errorbar(s.rate, k * s[f"{m}_mean"], yerr=k * s[f"{m}_ci95"], marker="o", ms=4, lw=1.5,
                         capsize=3, color=TYPE_COLORS[t], label=t)
         if logy:
             ax.set_yscale("log")
