@@ -265,12 +265,12 @@ def build(exp):
         png = f"runs/rate{rate:g}_s{first_seed}_panel.png"  # forward slash: LaTeX path
         if os.path.exists(os.path.join(exp, png)):
             appendix.append(
-                rf"\begin{{figure}}[p]\centering\includegraphics[width=\linewidth]{{{png}}}"
+                rf"\begin{{figure}}[H]\centering\includegraphics[width=\linewidth]{{{png}}}"
                 rf"\caption{{Sample path at rate {rate:g} req/s, seed {first_seed}: latency densities, queue wait against "
-                r"arrival time, KV occupancy, queue and batch sizes, evictions per second. Dashed lines mark the window.}\end{figure}")
+                r"arrival time, KV occupancy, queue and batch sizes, evictions per second. Dashed lines mark the window.}\end{figure}\clearpage")
 
     tex.append(r"\subsection*{9. Artifacts}")
-    files = sorted(os.listdir(exp))
+    files = sorted(f for f in os.listdir(exp) if not f.endswith((".tex", ".aux", ".log", ".out")))
     nruns = len(glob.glob(os.path.join(exp, "runs", "*.json*")))
     tex.append(esc(", ".join(f for f in files if f != "runs")) + esc(f"; runs/: {nruns} runs, each with metrics json (gzipped), BLIS log, state csv and panel png."))
     if appendix:
