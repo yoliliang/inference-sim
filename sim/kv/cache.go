@@ -130,13 +130,17 @@ func (kvc *KVCacheState) removeFromFreeList(block *KVBlock) {
 // break condition changes, update SnapshotCachedBlocksFn to match.
 func (kvc *KVCacheState) GetCachedBlocks(tokens []sim.TokenID) (blockIDs []int64) {
 	n := util.Len64(tokens) / kvc.BlockSizeTokens
+	prevHash := ""
 	for i := int64(0); i < n; i++ {
-		h := promptChainHash(tokens, kvc.BlockSizeTokens, i)
+		start := i * kvc.BlockSizeTokens
+		end := start + kvc.BlockSizeTokens
+		h := hash.HashBlock(prevHash, tokens[start:end])
 		blockId, ok := kvc.HashToBlock[h]
 		if !ok {
 			break
 		}
 		blockIDs = append(blockIDs, blockId)
+		prevHash = h
 	}
 	return
 }
