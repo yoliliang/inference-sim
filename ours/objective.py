@@ -18,6 +18,7 @@ Outputs in the experiment folder:
 """
 import argparse
 import glob
+import shutil
 import math
 import os
 import sys
@@ -97,6 +98,8 @@ def main():
                                                      "specs", "objective.yaml"))
     a = ap.parse_args()
     params = yaml.safe_load(open(a.params))
+    os.makedirs(os.path.join(a.exp, "specs"), exist_ok=True)
+    shutil.copyfile(a.params, os.path.join(a.exp, "specs", "objective.yaml"))  # the prices this folder was valued with
     manifest = analyze.json.load(open(os.path.join(a.exp, "manifest.json")))
     horizon = float(manifest["horizon_s"]) if manifest.get("horizon_s") else None
 

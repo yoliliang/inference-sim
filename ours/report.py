@@ -7,10 +7,11 @@ Structure (an e-companion numerical-details section, plain language throughout):
     3  System                        the served model, the GPUs, the KV cache, the per-step limits
     4  Workload                      the three request types in words and in a table; rates, seeds, horizon
     5  Control policies              table, then a prose description of what each policy does
-    6  Statistics                    what one sample path is, the window, the estimators, the intervals
-    7  Results                       glossary of the columns, then the tables and sweep figures
-    8  Notes and interpretation      remaining README.md sections
-    9  Artifacts                     files in the folder
+    6  Statistics                    what BLIS records, what one sample path is, the window, the estimators, the intervals
+    7  Objective                     the revenue management objective: prices, formula, how it is computed
+    8  Results                       glossary of the columns, then the tables and sweep figures
+    9  Notes and interpretation      remaining README.md sections
+    10 Artifacts                     files in the folder
     Appendix                         the six-panel figure of the first sample path at every rate
 
 Compiles with pdflatex (MiKTeX). Re-runnable; README.md is the editable text source.
@@ -184,8 +185,12 @@ def build(exp):
     name = os.path.basename(exp)
     m = json.load(open(os.path.join(exp, "manifest.json")))
     fl = flags_to_dict(m.get("base_flags", []) + m.get("extra_flags", []))
-    specs = sorted(glob.glob(os.path.join(exp, "specs", "*.yaml")))
+    specs = sorted(p for p in glob.glob(os.path.join(exp, "specs", "*.yaml")) if not p.endswith("objective.yaml"))
     spec = yaml.safe_load(open(specs[0])) if specs else {"clients": []}
+    obj_path = os.path.join(exp, "specs", "objective.yaml")
+    if not os.path.exists(obj_path):
+        obj_path = os.path.join(HERE, "specs", "objective.yaml")
+    prices = yaml.safe_load(open(obj_path))["types"] if os.path.exists(obj_path) else {}
     md_path = os.path.join(exp, "README.md")
     md = open(md_path, encoding="utf-8").read() if os.path.exists(md_path) else ""
     parts = re.split(r"^## ", md, flags=re.M)
@@ -262,7 +267,8 @@ def build(exp):
                           if scaling else ", ".join(f"{r:g}" for r in m.get("rates", [])) + " req/s, total over all types")),
         ("Seeds", f"{len(m.get('seeds', []))} ({m['seeds'][0]} to {m['seeds'][-1]}); one seed = one sample path" + (" at every n" if scaling else "") if m.get("seeds") else ""),
         ("Horizon", f"{horizon:g} s of simulated time per sample path" if horizon else f"{m.get('num_requests')} arrivals then drain"),
-        ("Economic parameters", "not used in this experiment. Rewards per type and the congestion cost (ours/specs/objective.yaml) are still to be decided."),
+        ("Economic parameters", ("; ".join(f"{t}: pi_in {p['pi_in']:g}, pi_out {p['pi_out']:g} per 1,000 tokens, h {p['h']:g} per second" for t, p in prices.items())
+                                 + ". Defined in section 7.") if prices else "none"),
     ]))
 
     # 5
@@ -294,6 +300,8 @@ def build(exp):
 
     # 6
     tex.append(r"\subsection*{6. Statistics}")
+    tex.append(r"\paragraph*{What BLIS records.}")
+    tex.append(para("BLIS has no objective of its own. For every request it records the arrival time, the prompt and answer lengths in tokens, the queue wait (scheduling delay), the time to first token (TTFT), the end-to-end time (E2E), the mean inter-token gap (ITL), the instance that served it and, in our fork, how many times it was evicted, how many computed tokens the evictions discarded, and its status (completed, unfinished at the horizon, or rejected). Per run it records the counts of completed, still queued and still running requests, total input and output tokens, throughput in requests and tokens per second, the mean and the 90th, 95th and 99th percentiles of TTFT, E2E and ITL, the number of evictions (preemptions) and of KV allocation failures. Our fork adds a window block: for the requests that arrived in the steady-state window, per type, the counts by status and the sums of input tokens, output tokens, sojourn time of completed requests and censored time of unfinished requests. Every number in this report, the objective included, is computed from these records; nothing is read from inside the simulation."))
     win = f"[{warm:g} s, {horizon - tail:g} s)" if horizon else f"[{warm:g} s, end - {tail:g} s)"
     tex.append(kv_table([
         ("Sample path", "one BLIS run with one seed. Every statistic is first computed on one path; paths are the independent replications"),
@@ -305,7 +313,20 @@ def build(exp):
     ]))
 
     # 7
-    tex.append(r"\subsection*{7. Results}")
+    tex.append(r"\subsection*{7. Objective}")
+    tex.append(para("The experiments are valued with a revenue management objective defined by us, not by BLIS. A request of type k that completes earns a reward proportional to its length and pays a congestion cost proportional to the time it spent in the system, from arrival to its last token (queueing and service alike, the convention of the queueing-economics literature after Naor and Mendelson). A request rejected at admission earns and pays nothing. A request that arrived in the window but is still in the system at the horizon T earns nothing and pays the cost of the time it has spent so far, a lower bound on its true cost. Let W be the steady-state window, C the set of window arrivals that completed, U the set of window arrivals still unfinished at T, and for request i let k(i) be its type, P_i its prompt length, o_i its answer length, a_i its arrival time and e_i its completion time. The objective is the net value per second of window time,"))
+    tex.append(r"\[ V = \frac{1}{|W|}\left[\; \sum_{i \in C} \frac{\pi^{\mathrm{in}}_{k(i)}\, P_i + \pi^{\mathrm{out}}_{k(i)}\, o_i}{1000} \;-\; \sum_{i \in C} h_{k(i)} \,(e_i - a_i) \;-\; \sum_{i \in U} h_{k(i)} \,(T - a_i) \right]. \]")
+    if prices:
+        rows = [r"\begin{table}[H]\centering\small", r"\begin{tabular}{@{}lrrr@{}}", r"\toprule",
+                r"type & $\pi^{\mathrm{in}}$ per 1,000 prompt tokens & $\pi^{\mathrm{out}}$ per 1,000 answer tokens & $h$ per second of sojourn \\", r"\midrule"]
+        for t, p in prices.items():
+            rows.append(f"{esc(t)} & {p['pi_in']:g} & {p['pi_out']:g} & {p['h']:g} \\\\")
+        rows += [r"\bottomrule", r"\end{tabular}", r"\caption{Prices and congestion cost used in this experiment (ours/specs/objective.yaml, copied into specs/). Units are abstract; only the ratios matter for ranking policies. The output-to-input ratio of 4 follows commercial API pricing; h is chosen so that the uncongested sojourn costs 4 to 16 percent of the reward, so that congestion can outweigh revenue under overload.}", r"\end{table}"]
+        tex.append("\n".join(rows))
+    tex.append(para("V is computed on every sample path from the window block's per-type sums (section 6): reward from the summed input and output tokens of completed window arrivals, congestion cost from the summed sojourn of completed and the summed censored time of unfinished window arrivals. It is then averaged over the seeds with the same confidence band as the other statistics. The objective.csv file gives the reward, the cost and the value per second by type; objective.png plots the value. For a scaling experiment V is a system total and is expected to grow linearly in n; the value per unit of scale is V divided by n."))
+
+    # 8
+    tex.append(r"\subsection*{8. Results}")
     tex.append(r"\paragraph*{Reading the columns.}")
     tex.append(para("Queue wait: from arrival until the instance first puts the request into a batch. TTFT (time to first token): from arrival until the first answer token, that is wait plus prompt processing. E2E (end to end): from arrival until the last answer token. p99: the 99th percentile, the value that 99 percent of requests stay below; the tail of the distribution. Band: half-width of the 95 percent confidence band of the wait mean across seeds. Unfinished, rejected: percent of the requests arriving in the window. Evictions/s: evictions per second of simulated time, whole cluster. Evictions per completion: evictions divided by completed window requests. Output tok/s: answer tokens produced per second, whole cluster. Times are in seconds."))
     if summary is not None:
@@ -315,7 +336,7 @@ def build(exp):
                 tex.append(results_table(summary, t, f"{t} only, mean over seeds.", scaling))
     figs = [("scaling_panel.png", "Key system statistics against the system scale n (log2 axis): mean over seeds with the shaded 95 percent confidence band. System totals (value, throughput, evictions) should grow linearly, per-request quantities should converge. Dashed lines are least-squares power-law fits to the all-types means; the exponent is in the legend and in the table below."),
             ("sweep_panel.png", "Window statistics against the total arrival rate: mean over seeds with the shaded 95 percent confidence band."),
-            ("objective.png", "Revenue management objective per second (placeholder prices, see ours/specs/objective.yaml).")]
+            ("objective.png", "Revenue management objective V per second of window time (section 7): mean over seeds with the shaded 95 percent confidence band.")]
     for fig, cap in figs:
         if os.path.exists(os.path.join(exp, fig)):
             tex.append(rf"\begin{{figure}}[H]\centering\includegraphics[width=\linewidth]{{{fig}}}\caption{{{esc(cap)}}}\end{{figure}}")
@@ -334,11 +355,11 @@ def build(exp):
         tex.append("\n".join(rows))
 
     # 8
-    tex.append(r"\subsection*{8. Notes and interpretation}")
+    tex.append(r"\subsection*{9. Notes and interpretation}")
     tex.append(md_to_tex(rest) if rest.strip() else "(none)")
 
     # 9
-    tex.append(r"\subsection*{9. Artifacts}")
+    tex.append(r"\subsection*{10. Artifacts}")
     files = sorted(f for f in os.listdir(exp) if not f.endswith((".tex", ".aux", ".log", ".out")))
     nruns = len(glob.glob(os.path.join(exp, "runs", "*.json*")))
     tex.append(esc(", ".join(f for f in files if f != "runs")) + esc(f"; runs/: {nruns} sample paths, each with the per-request json (gzipped), the BLIS log, the state csv and its six-panel figure."))
