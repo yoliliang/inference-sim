@@ -69,6 +69,8 @@ def load_run(path):
             df[c] = 0
         df[c] = df[c].fillna(0)
     state_path = _stem(path) + "_state.csv"
+    if not os.path.exists(state_path) and os.path.exists(path + "_state.csv"):
+        state_path = path + "_state.csv"  # name written by builds before the .json.gz stem fix
     state = pd.read_csv(state_path) if os.path.exists(state_path) else None
     if state is not None:
         state["t_s"] = state["clock_us"] / 1e6
@@ -390,7 +392,7 @@ def scaling_plot(summary, out_png, out_csv, title, extra=None):
                     xx = np.linspace(x.min(), x.max(), 50)
                     ax.plot(xx, np.exp(a0) * xx ** b, ls="--", color="#333", lw=1, label=f"fit n^{b:.2f}")
         ax.set_xscale("log", base=2)
-        if kind == "total" and m != "value_per_s":
+        if (kind == "total" and m != "value_per_s") or m in ("delay_mean_ms", "ttft_p99_ms"):
             ax.set_yscale("log")
         ax.set_xlabel("system scale n")
         ax.set_ylabel(label)

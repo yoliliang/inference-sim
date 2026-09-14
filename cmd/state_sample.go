@@ -154,7 +154,7 @@ func resolveSnapshotPath(snapshotInterval, stateInterval int64, statePath, metri
 		if metrics == "" {
 			return "", fmt.Errorf("--state-snapshot-interval requires --metrics-path or --state-sample-path")
 		}
-		base = strings.TrimSuffix(metrics, ".json") + "_state.csv"
+		base = metricsStem(metrics) + "_state.csv"
 	}
 	return strings.TrimSuffix(base, "_state.csv") + "_snapshot.csv", nil
 }
@@ -174,5 +174,10 @@ func resolveStateSamplePath(interval int64, explicit, metrics string) (string, e
 	if metrics == "" {
 		return "", fmt.Errorf("--state-sample-interval requires --state-sample-path or --metrics-path")
 	}
-	return strings.TrimSuffix(metrics, ".json") + "_state.csv", nil
+	return metricsStem(metrics) + "_state.csv", nil
+}
+
+// metricsStem strips .json or .json.gz from a metrics path.
+func metricsStem(p string) string {
+	return strings.TrimSuffix(strings.TrimSuffix(p, ".gz"), ".json")
 }
