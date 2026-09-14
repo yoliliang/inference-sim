@@ -160,7 +160,14 @@ func (e *AdmissionDecisionEvent) Priority() int     { return 1 }
 // If admitted, schedules a RoutingDecisionEvent.
 // If rejected, increments cs.rejectedRequests counter (EC-2).
 func (e *AdmissionDecisionEvent) Execute(cs *ClusterSimulator) {
-	state := buildRouterState(cs, e.request)
+	// ours: always-admit ignores the router state, so do not build the O(n) snapshot
+	// list for it (it was a tenth of the run time at n = 64).
+	var state *sim.RouterState
+	if _, ok := cs.admissionPolicy.(*sim.AlwaysAdmit); ok {
+		state = &sim.RouterState{Clock: cs.clock}
+	} else {
+		state = buildRouterState(cs, e.request)
+	}
 	admitted, reason := cs.admissionPolicy.Admit(e.request, state)
 	logrus.Debugf("[cluster] req %s: admitted=%v reason=%q", e.request.ID, admitted, reason)
 

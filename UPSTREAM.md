@@ -31,6 +31,8 @@ Branch: ours
 - sim/metrics.go (third item): +Metrics.ITLCounts (value counts instead of the AllITLs slice when set), AddITLs, itlStatsFromCounts reproducing CalculateMean and CalculatePercentile exactly
 - sim/cluster/cluster.go (third item): arrivals are pulled from the RequestSource as the clock advances instead of being drained into the event heap up front (+moreArrivals); lean-mode setup of instances; ITLCounts merge in aggregateMetrics
 - sim/cluster/autoscaler.go: tick guard also checks moreArrivals
+- sim/kv/cache.go (second item): promptChainHash, a one-entry memo of the prompt's block hash chain shared by GetCachedBlocks and the snapshot closures (the router queried every instance with a fresh SHA256 chain per arrival)
+- sim/cluster/cluster_event.go (second item): AdmissionDecisionEvent skips buildRouterState for AlwaysAdmit
 - sim/cluster/deployment.go: +ReleaseCompletedRequests
 - cmd/root.go, cmd/state_sample.go (third item): +--release-completed-requests (refused with --trace-output); BLIS_MEMPROFILE heap profile hook
 

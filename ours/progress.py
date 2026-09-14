@@ -22,10 +22,14 @@ def status(exp):
         n = (m.get("instances") or [4])[0]
         points = [(f"rate{r:g}", n * r) for r in m["rates"]]
     seeds = m["seeds"]
+    cut = m.get("seeds_from_n") or ""
     total, done = 0, 0
     work_total, work_done = 0.0, 0.0
     for p, w in points:
-        for s in seeds:
+        pseeds = seeds
+        if cut and p.startswith("n") and int(p[1:]) >= int(cut.split(":")[0]):
+            pseeds = seeds[:int(cut.split(":")[1])]
+        for s in pseeds:
             total += 1
             work_total += w
             if os.path.exists(os.path.join(exp, "runs", f"{p}_s{s}.json.gz")):

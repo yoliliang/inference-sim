@@ -130,19 +130,56 @@ func (kvc *KVCacheState) removeFromFreeList(block *KVBlock) {
 // break condition changes, update SnapshotCachedBlocksFn to match.
 func (kvc *KVCacheState) GetCachedBlocks(tokens []sim.TokenID) (blockIDs []int64) {
 	n := util.Len64(tokens) / kvc.BlockSizeTokens
-	prevHash := ""
 	for i := int64(0); i < n; i++ {
-		start := i * kvc.BlockSizeTokens
-		end := start + kvc.BlockSizeTokens
-		h := hash.HashBlock(prevHash, tokens[start:end])
+		h := promptChainHash(tokens, kvc.BlockSizeTokens, i)
 		blockId, ok := kvc.HashToBlock[h]
 		if !ok {
 			break
 		}
 		blockIDs = append(blockIDs, blockId)
-		prevHash = h
 	}
 	return
+}
+
+// ours: one-entry memo of a prompt's block hash chain. The router queries every
+// instance's cache for the same prompt in a row; without the memo each query
+// recomputed the SHA256 chain from scratch, which was a fifth of the run time at
+// n = 64. The memo is keyed by the token content (a pointer/length fast path first,
+// which is safe because the memo keeps the slice alive, see sameTokens). The
+// hash chain is extended lazily, one block at a time. Single-threaded by design,
+// like the rest of the simulator.
+type promptChain struct {
+	tokens    []sim.TokenID
+	blockSize int64
+	hashes    []string
+}
+
+var lastPromptChain promptChain
+
+func sameTokens(a, b []sim.TokenID) bool {
+	// The memo holds a reference to the last prompt's slice, so its backing array cannot
+	// be freed and reused while it is the memo key; equal data pointer and length then
+	// mean the same, unmodified prompt (InputTokens are never mutated after generation).
+	return len(a) == len(b) && (len(a) == 0 || &a[0] == &b[0])
+}
+
+// promptChainHash returns the hash of block i of tokens (chained from block 0).
+func promptChainHash(tokens []sim.TokenID, blockSize int64, i int64) string {
+	c := &lastPromptChain
+	if c.blockSize != blockSize || !sameTokens(c.tokens, tokens) {
+		c.tokens = tokens // hold the reference (see sameTokens)
+		c.blockSize = blockSize
+		c.hashes = c.hashes[:0]
+	}
+	for int64(len(c.hashes)) <= i {
+		j := int64(len(c.hashes))
+		prev := ""
+		if j > 0 {
+			prev = c.hashes[j-1]
+		}
+		c.hashes = append(c.hashes, hash.HashBlock(prev, c.tokens[j*blockSize:(j+1)*blockSize]))
+	}
+	return c.hashes[i]
 }
 
 // SnapshotCachedBlocksFn returns a function that queries a frozen copy of the
@@ -161,17 +198,12 @@ func (kvc *KVCacheState) SnapshotCachedBlocksFn() func([]sim.TokenID) int {
 	blockSize := kvc.BlockSizeTokens
 	return func(tokens []sim.TokenID) int {
 		n := int64(len(tokens)) / blockSize
-		prevHash := ""
 		count := 0
 		for i := int64(0); i < n; i++ {
-			start := i * blockSize
-			end := start + blockSize
-			h := hash.HashBlock(prevHash, tokens[start:end])
-			if _, ok := snapshot[h]; !ok {
+			if _, ok := snapshot[promptChainHash(tokens, blockSize, i)]; !ok { // ours: memoised chain
 				break
 			}
 			count++
-			prevHash = h
 		}
 		return count
 	}

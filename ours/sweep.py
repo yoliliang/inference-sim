@@ -123,6 +123,9 @@ def main():
                     help="write per-instance state every N ms of simulated time (0 = off)")
     ap.add_argument("--state-snapshot-s", type=float, default=0.0,
                     help="write the per-request queue and batch composition every N s (0 = off; multiple of state-sample-ms)")
+    ap.add_argument("--seeds-from-n", default="",
+                    help="scaling experiment: N:K means use only the first K seeds for every n >= N "
+                         "(path-to-path variance falls with n, so large n needs fewer replications)")
     ap.add_argument("--keep-paths", choices=["none", "first", "all"], default="none",
                     help="write the per-request array (path data) for no seed, the first seed of each point, or all seeds; "
                          "statistics come from the window block either way")
@@ -177,7 +180,7 @@ def main():
         "horizon_s": a.horizon_s, "num_requests": None if fixed else a.num_requests,
         "warmup_s": a.warmup_s, "tail_s": a.tail_s,
         "state_sample_ms": a.state_sample_ms, "state_snapshot_s": a.state_snapshot_s,
-        "keep_paths": a.keep_paths,
+        "keep_paths": a.keep_paths, "seeds_from_n": a.seeds_from_n,
         "blocks": a.blocks, "profile": a.profile,
         "base_flags": BASE_FLAGS + PROFILES[a.profile] + mode_flags,
         "extra_flags": a.extra,
@@ -204,10 +207,15 @@ def main():
                            f"e2e_mean={m['e2e_mean_ms']:8,.0f} tok/s={m['tokens_per_sec']:6,.0f}  (raw BLIS, untrimmed)")
 
     jobs, n_ok = [], 0
+    seed_cut = None
+    if a.seeds_from_n:
+        n_from, k = a.seeds_from_n.split(":")
+        seed_cut = (int(n_from), int(k))
     for n_inst, rate, rtag in points:
         spec = os.path.join(exp, "specs", f"{rtag}.yaml")
         write_spec(a.spec, spec, rate, 0 if fixed else a.num_requests)
-        for seed in seeds:
+        point_seeds = seeds[:seed_cut[1]] if seed_cut and n_inst >= seed_cut[0] else seeds
+        for seed in point_seeds:
             tag = f"{rtag}_s{seed}"
             out = os.path.join(exp, "runs", tag + ".json.gz")  # written gzipped by BLIS
             log = os.path.join(exp, "runs", tag + ".log")
