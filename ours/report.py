@@ -268,7 +268,7 @@ def build(exp):
         ("Seeds", f"{len(m.get('seeds', []))} ({m['seeds'][0]} to {m['seeds'][-1]}); one seed = one sample path" + (" at every n" if scaling else "") if m.get("seeds") else ""),
         ("Horizon", f"{horizon:g} s of simulated time per sample path" if horizon else f"{m.get('num_requests')} arrivals then drain"),
         ("Economic parameters", ("; ".join(f"{t}: pi_in {p['pi_in']:g}, pi_out {p['pi_out']:g} per 1,000 tokens, h {p['h']:g} per second" for t, p in prices.items())
-                                 + ". Defined in section 7.") if prices else "none"),
+                                 + ". Used only in the valuation of the recorded runs (section 7); the simulation itself never sees them.") if prices else "none"),
     ]))
 
     # 5
