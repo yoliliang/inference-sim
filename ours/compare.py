@@ -93,7 +93,8 @@ def band_table(diff, base, cand, cols):
             row[f"{c}_cand"] = cm[c].mean()
             row[f"{c}_diff"] = mean
             row[f"{c}_band"] = band
-            row[f"{c}_rel"] = mean / b0 if b0 not in (0, np.nan) and not pd.isna(b0) and b0 != 0 else np.nan
+            # relative to the size of the baseline mean, so a gain on a negative objective reads positive
+            row[f"{c}_rel"] = mean / abs(b0) if not pd.isna(b0) and b0 != 0 else np.nan
         rows.append(row)
     return pd.DataFrame(rows)
 
