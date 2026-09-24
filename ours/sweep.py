@@ -68,9 +68,24 @@ ENGINE_H100 = ["--scheduler", "fcfs", "--preemption-policy", "fcfs",
                "--long-prefill-token-threshold", "0", "--block-size-in-tokens", "16",
                "--batch-formation", "vllm", "--admission-policy", "always-admit"]
 LLMD_SCORERS = "precise-prefix-cache:2,queue-depth:1,kv-utilization:1"
+
+
+def with_preemption(flags, name):
+    """Copy of an engine flag list with the value after --preemption-policy replaced."""
+    out = list(flags)
+    out[out.index("--preemption-policy") + 1] = name
+    return out
+
+
+# Candidate policies (see ours/policies.md): <baseline>_<policy>, differing from the baseline
+# in exactly one decision.
+#   B1_srf    B1 with Shortest-Request-First eviction (Kim et al. 2024, arXiv 2411.07447):
+#             the victim is the running request holding the fewest KV entries
 PROFILES = {
     "B1": ["--routing-policy", "weighted", "--routing-scorers", LLMD_SCORERS,
            "--snapshot-refresh-interval", "50000", *ENGINE_H100],
+    "B1_srf": ["--routing-policy", "weighted", "--routing-scorers", LLMD_SCORERS,
+               "--snapshot-refresh-interval", "50000", *with_preemption(ENGINE_H100, "srf")],
     "B0": ["--routing-policy", "weighted", "--routing-scorers", "vllm-dp:1",
            "--snapshot-refresh-interval", "0", *ENGINE_H100],
     "floor": ["--routing-policy", "round-robin",

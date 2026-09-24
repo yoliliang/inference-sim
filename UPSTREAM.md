@@ -35,9 +35,14 @@ Branch: ours
 - sim/cluster/deployment.go: +ReleaseCompletedRequests
 - cmd/root.go, cmd/state_sample.go (third item): +--release-completed-requests (refused with --trace-output); BLIS_MEMPROFILE heap profile hook
 
+- sim/batch_formation.go (second item): +PreemptionSRF ("srf") and selectSRFVictim, one more case in the victim switch of preemptForTokens; the fcfs and priority paths are untouched
+- sim/bundle.go (second item): "srf" added to validPreemptionPolicies
+- cmd/root.go (fourth item): --preemption-policy help text lists srf
+
 ## Files added (ours)
 
 - sim/scheduler_typerank.go
+- sim/batch_formation_srf_test.go
 - sim/batch_formation_ours.go
 - cmd/state_sample.go (periodic per-instance state CSV via the existing read-only sim.ProgressHook)
 - ours/ (specs, run.ps1, run.sh, sweep.py grid driver with B0/B1/floor/oracle/harness profiles, analyze.py steady-state analysis and panel plots, objective.py revenue-management objective, report.py README.pdf generator via pdflatex, visualization-brief.md; results/ and experiments/ gitignored)

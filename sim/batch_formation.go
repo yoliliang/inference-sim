@@ -85,6 +85,16 @@ const (
 	// Selects max(Priority) with max(ArrivalTime) tiebreak — direct parity with
 	// vLLM scheduler.py:1086: max(self.running, key=lambda r: (r.priority, r.arrival_time)).
 	PreemptionPriority PreemptionPolicy = "priority"
+
+	// PreemptionSRF (ours) evicts the running request holding the fewest KV entries
+	// (smallest ProgressIndex), repeating until the allocation succeeds. Shortest-Request-First
+	// of Kim et al. (EPFL), "Saving GPU Hours in LLM Inference System Development and Online
+	// Workloads with Simulation and DBMS-Inspired Cache Replacement Policies", arXiv 2411.07447:
+	// the recomputation cost of a victim grows with the KV it holds, so evict the cheapest.
+	// Ties go to the most recently admitted request (the tail), so with equal holdings SRF
+	// coincides with fcfs. Launch order, routing and the victim's re-entry at the queue front
+	// are unchanged.
+	PreemptionSRF PreemptionPolicy = "srf"
 )
 
 // decodeTokensToCompletion returns how many more decode tokens a request needs to reach
@@ -408,6 +418,8 @@ func (v *VLLMBatchFormation) preemptForTokens(req *Request, numNewTokens int64, 
 			switch v.preemptionPolicy {
 			case PreemptionPriority:
 				victimIdx = v.selectPriorityVictim(result.RunningBatch.Requests)
+			case PreemptionSRF: // ours
+				victimIdx = v.selectSRFVictim(result.RunningBatch.Requests)
 			default:
 				victimIdx = len(result.RunningBatch.Requests) - 1
 			}
@@ -500,8 +512,25 @@ func (v *VLLMBatchFormation) selectPriorityVictim(requests []*Request) int {
 	return victimIdx
 }
 
+// selectSRFVictim (ours) returns the index of the running request holding the fewest KV
+// entries. ProgressIndex counts the tokens whose KV the request holds: the prefilled prompt
+// tokens plus the generated ones, or a partial prompt while a chunked prefill is in flight.
+// The scan starts at the tail so that ties resolve to the most recently admitted request.
+func (v *VLLMBatchFormation) selectSRFVictim(requests []*Request) int {
+	victimIdx := len(requests) - 1
+	victimHeld := requests[victimIdx].ProgressIndex
+	for i := len(requests) - 2; i >= 0; i-- {
+		if requests[i].ProgressIndex < victimHeld {
+			victimIdx = i
+			victimHeld = requests[i].ProgressIndex
+		}
+	}
+	return victimIdx
+}
+
 // NewBatchFormation creates the default BatchFormation.
-// preemptionPolicy selects victim strategy: "fcfs" (tail-of-batch) or "priority" (least-urgent SLO tier).
+// preemptionPolicy selects victim strategy: "fcfs" (tail-of-batch), "priority" (least-urgent SLO tier)
+// or "srf" (fewest KV entries held; ours).
 // In "priority" mode, victim selection reads Request.Priority directly (set by the pre-processor
 // in Simulator.EnqueueRequest via SLOPriorityMap.InvertForVLLM — no sloMap needed here).
 func NewBatchFormation(preemptionPolicy string) BatchFormation {

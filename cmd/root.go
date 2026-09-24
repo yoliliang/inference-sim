@@ -1,14 +1,14 @@
 package cmd
 
 import (
-	"runtime/pprof"
-	"runtime"
 	"bytes"
 	"fmt"
 	"io"
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/pprof"
 	"sort"
 	"strconv"
 	"strings"
@@ -1513,7 +1513,7 @@ func registerSimConfigFlags(cmd *cobra.Command) {
 
 	// Scheduler and preemption config
 	cmd.Flags().StringVar(&scheduler, "scheduler", "fcfs", "Instance scheduler: fcfs, priority-fcfs, sjf, reverse-priority")
-	cmd.Flags().StringVar(&preemptionPolicy, "preemption-policy", "fcfs", "Preemption victim selection: fcfs (tail-of-batch), priority (least-urgent SLO tier)")
+	cmd.Flags().StringVar(&preemptionPolicy, "preemption-policy", "fcfs", "Preemption victim selection: fcfs (tail-of-batch), priority (least-urgent SLO tier), srf (fewest KV entries held, Kim et al. 2024)")
 	cmd.Flags().StringVar(&batchFormation, "batch-formation", "vllm", "ours: batch-formation strategy: vllm (upstream default), ours (custom FormBatch in sim/batch_formation_ours.go)")
 
 	// Policy bundle config
