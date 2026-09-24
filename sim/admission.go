@@ -224,6 +224,8 @@ func NewAdmissionPolicy(name string, capacity, refillRate float64) AdmissionPoli
 		panic("tier-shed requires NewTierShedAdmission; cannot use generic factory")
 	case "gaie-legacy":
 		panic("gaie-legacy requires NewGAIELegacyAdmission; cannot use generic factory")
+	case "mooncake": // ours
+		panic("mooncake requires NewMooncakeAdmission; cannot use generic factory")
 	default:
 		panic(fmt.Sprintf("unhandled admission policy %q", name))
 	}

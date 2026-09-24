@@ -164,6 +164,15 @@ func (i *InstanceSimulator) QueueDepth() int {
 	return i.sim.QueueDepth()
 }
 
+// QueuedPromptTokens (ours) wraps Simulator.QueuedPromptTokens.
+func (i *InstanceSimulator) QueuedPromptTokens() int64 { return i.sim.QueuedPromptTokens() }
+
+// RunningPrefillTokens (ours) wraps Simulator.RunningPrefillTokens.
+func (i *InstanceSimulator) RunningPrefillTokens() int64 { return i.sim.RunningPrefillTokens() }
+
+// StepTimeFn (ours) wraps Simulator.StepTimeFn.
+func (i *InstanceSimulator) StepTimeFn() func(batch []*sim.Request) int64 { return i.sim.StepTimeFn() }
+
 // BatchSize returns the number of requests in the running batch, or 0 if nil.
 func (i *InstanceSimulator) BatchSize() int {
 	return i.sim.BatchSize()

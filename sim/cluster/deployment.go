@@ -113,6 +113,13 @@ type DeploymentConfig struct {
 	GAIEQDThreshold float64 // queue depth threshold per instance (default 5)
 	GAIEKVThreshold float64 // KV cache utilization threshold (default 0.8)
 
+	// ours: Mooncake admission parameters. Only used when AdmissionPolicy = "mooncake".
+	MooncakeMode            string  // "now" (Early Rejection) or "predict" (Early Rejection based on Prediction)
+	MooncakeTTFTTargetS     float64 // TTFT target, seconds
+	MooncakeTBTTargetMs     float64 // TBT target, milliseconds
+	MooncakeTheta           float64 // load threshold
+	MooncakeDecodeDurationS float64 // assumed decode duration t_d, seconds
+
 	// Phase 1B-2a: per-tenant fair-share budgets (issue #811).
 	// Key: TenantID string. Value: fraction of total cluster capacity (0.0–1.0).
 	// Zero value is safe: nil = no enforcement (all tenants unlimited).

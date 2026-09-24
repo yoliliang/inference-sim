@@ -283,6 +283,9 @@ func NewClusterSimulator(config DeploymentConfig, requestSource RequestSource, o
 			kvThreshold = 0.8 // GAIE DefaultKVCacheUtilThreshold (config.go:33)
 		}
 		admissionPolicy = sim.NewGAIELegacyAdmission(qdThreshold, kvThreshold, priorityMap)
+	case "mooncake": // ours
+		admissionPolicy = sim.NewMooncakeAdmission(config.MooncakeMode, config.MooncakeTTFTTargetS,
+			config.MooncakeTBTTargetMs, config.MooncakeTheta, config.MooncakeDecodeDurationS, config.MaxNumBatchedTokens)
 	default:
 		admissionPolicy = sim.NewAdmissionPolicy(config.AdmissionPolicy, config.TokenBucketCapacity, config.TokenBucketRefillRate)
 	}
@@ -485,6 +488,13 @@ func NewClusterSimulator(config DeploymentConfig, requestSource RequestSource, o
 	// Deferred instances are registered via CachedSnapshotProvider.AddInstance
 	// when NodeReadyEvent.Execute constructs them (Phase 4, T017).
 	cs.snapshotProvider = NewCachedSnapshotProvider(instanceMap, newObservabilityConfig(config.SnapshotRefreshInterval, config.CacheSignalDelay))
+
+	// ours: the Mooncake admission rule estimates TTFT and TBT with the instances' own
+	// step-time model (all instances share one config, so the first one's model serves).
+	if mc, ok := cs.admissionPolicy.(*sim.MooncakeAdmission); ok && len(cs.instances) > 0 {
+		mc.StepTime = cs.instances[0].StepTimeFn()
+		cs.snapshotProvider.prefillWork = true
+	}
 
 	// Build cacheQueryFn from the unified snapshot provider (#1060).
 	// When CacheSignalDelay > 0, CachedSnapshotProvider manages stale snapshots.

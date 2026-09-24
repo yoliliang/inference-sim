@@ -96,18 +96,23 @@ var (
 	numInstances int // Number of instances in the cluster
 
 	// online routing pipeline config
-	admissionPolicy       string             // Admission policy name
-	admissionLatency      int64              // Admission latency in microseconds
-	routingLatency        int64              // Routing latency in microseconds
-	tokenBucketCapacity   float64            // Token bucket capacity
-	tokenBucketRefillRate float64            // Token bucket refill rate (tokens/second)
-	tierShedThreshold     int                // Tier-shed overload threshold (0 = any load)
-	tierShedMinPriority   int                // Tier-shed minimum admitted priority under overload
-	tenantBudgets         map[string]float64 // Per-tenant fraction of total capacity (nil = no enforcement)
-	sloPriorityOverrides  map[string]int     // SLO class → priority overrides (nil = GAIE defaults)
-	sloTargetsMap         map[string]int64   // SLO class → TTFT target µs for slo-deadline ordering (nil = disabled)
-	gaieQDThreshold       float64            // GAIE-legacy queue depth threshold per instance (default 5)
-	gaieKVThreshold       float64            // GAIE-legacy KV cache utilization threshold (default 0.8)
+	admissionPolicy         string             // Admission policy name
+	admissionLatency        int64              // Admission latency in microseconds
+	routingLatency          int64              // Routing latency in microseconds
+	tokenBucketCapacity     float64            // Token bucket capacity
+	tokenBucketRefillRate   float64            // Token bucket refill rate (tokens/second)
+	tierShedThreshold       int                // Tier-shed overload threshold (0 = any load)
+	mooncakeMode            string             // ours: Mooncake admission mode (now | predict)
+	mooncakeTTFTTargetS     float64            // ours
+	mooncakeTBTTargetMs     float64            // ours
+	mooncakeTheta           float64            // ours
+	mooncakeDecodeDurationS float64            // ours
+	tierShedMinPriority     int                // Tier-shed minimum admitted priority under overload
+	tenantBudgets           map[string]float64 // Per-tenant fraction of total capacity (nil = no enforcement)
+	sloPriorityOverrides    map[string]int     // SLO class → priority overrides (nil = GAIE defaults)
+	sloTargetsMap           map[string]int64   // SLO class → TTFT target µs for slo-deadline ordering (nil = disabled)
+	gaieQDThreshold         float64            // GAIE-legacy queue depth threshold per instance (default 5)
+	gaieKVThreshold         float64            // GAIE-legacy KV cache utilization threshold (default 0.8)
 
 	// routing policy config (PR 6, evolved in PR17)
 	routingPolicy    string  // Routing policy name
@@ -1504,6 +1509,11 @@ func registerSimConfigFlags(cmd *cobra.Command) {
 	cmd.Flags().Int64Var(&admissionLatency, "admission-latency", 0, "Admission latency in microseconds")
 	cmd.Flags().Int64Var(&routingLatency, "routing-latency", 0, "Routing latency in microseconds")
 	cmd.Flags().Float64Var(&tokenBucketCapacity, "token-bucket-capacity", 10000, "Token bucket capacity")
+	cmd.Flags().StringVar(&mooncakeMode, "mooncake-mode", "predict", "ours: Mooncake admission rule: now (Early Rejection on current loads) or predict (Early Rejection based on Prediction)")
+	cmd.Flags().Float64Var(&mooncakeTTFTTargetS, "mooncake-ttft-target", 2.0, "ours: Mooncake TTFT target in seconds (prefill load = predicted TTFT / target)")
+	cmd.Flags().Float64Var(&mooncakeTBTTargetMs, "mooncake-tbt-target", 60.0, "ours: Mooncake TBT target in milliseconds (decode load = predicted step time / target)")
+	cmd.Flags().Float64Var(&mooncakeTheta, "mooncake-theta", 1.0, "ours: Mooncake load threshold; admit iff max(prefill load, decode load) <= theta")
+	cmd.Flags().Float64Var(&mooncakeDecodeDurationS, "mooncake-decode-duration", 9.0, "ours: Mooncake assumed decode duration t_d in seconds (predict mode)")
 	cmd.Flags().Float64Var(&tokenBucketRefillRate, "token-bucket-refill-rate", 1000, "Token bucket refill rate (tokens/second)")
 
 	// Routing policy config
@@ -2557,6 +2567,11 @@ var runCmd = &cobra.Command{
 			PrefillOverrides:                prefillOverrides,
 			DecodeOverrides:                 decodeOverrides,
 			TierShedThreshold:               tierShedThreshold,
+			MooncakeMode:                    mooncakeMode,
+			MooncakeTTFTTargetS:             mooncakeTTFTTargetS,
+			MooncakeTBTTargetMs:             mooncakeTBTTargetMs,
+			MooncakeTheta:                   mooncakeTheta,
+			MooncakeDecodeDurationS:         mooncakeDecodeDurationS,
 			TierShedMinPriority:             tierShedMinPriority,
 			GAIEQDThreshold:                 gaieQDThreshold,
 			GAIEKVThreshold:                 gaieKVThreshold,

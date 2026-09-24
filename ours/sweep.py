@@ -77,15 +77,34 @@ def with_preemption(flags, name):
     return out
 
 
+def with_admission(flags, name, *extra):
+    """Copy of an engine flag list with the admission policy replaced and extra flags appended."""
+    out = list(flags)
+    out[out.index("--admission-policy") + 1] = name
+    return out + list(extra)
+
+
+MOONCAKE_PARAMS = ["--mooncake-ttft-target", "2", "--mooncake-tbt-target", "60",
+                   "--mooncake-theta", "1.0", "--mooncake-decode-duration", "9"]
+
+
 # Candidate policies (see ours/policies.md): <baseline>_<policy>, differing from the baseline
 # in exactly one decision.
 #   B1_srf    B1 with Shortest-Request-First eviction (Kim et al. 2024, arXiv 2411.07447):
 #             the victim is the running request holding the fewest KV entries
+#   B1_mooncake      B1 with Mooncake Early Rejection based on Prediction (Qin et al. 2026, 4.3.4)
+#   B1_mooncake_now  B1 with Mooncake Early Rejection on current loads (4.3.2), the paper's own contrast
 PROFILES = {
     "B1": ["--routing-policy", "weighted", "--routing-scorers", LLMD_SCORERS,
            "--snapshot-refresh-interval", "50000", *ENGINE_H100],
     "B1_srf": ["--routing-policy", "weighted", "--routing-scorers", LLMD_SCORERS,
                "--snapshot-refresh-interval", "50000", *with_preemption(ENGINE_H100, "srf")],
+    "B1_mooncake": ["--routing-policy", "weighted", "--routing-scorers", LLMD_SCORERS,
+                    "--snapshot-refresh-interval", "50000",
+                    *with_admission(ENGINE_H100, "mooncake", "--mooncake-mode", "predict", *MOONCAKE_PARAMS)],
+    "B1_mooncake_now": ["--routing-policy", "weighted", "--routing-scorers", LLMD_SCORERS,
+                        "--snapshot-refresh-interval", "50000",
+                        *with_admission(ENGINE_H100, "mooncake", "--mooncake-mode", "now", *MOONCAKE_PARAMS)],
     "B0": ["--routing-policy", "weighted", "--routing-scorers", "vllm-dp:1",
            "--snapshot-refresh-interval", "0", *ENGINE_H100],
     "floor": ["--routing-policy", "round-robin",

@@ -461,6 +461,35 @@ func (sim *Simulator) RequestSnapshots() []RequestSnapshot {
 // QueueDepth returns the number of requests in the wait queue.
 func (sim *Simulator) QueueDepth() int { return sim.WaitQ.Len() }
 
+// QueuedPromptTokens (ours) returns the total prompt length of the requests in the wait queue.
+func (sim *Simulator) QueuedPromptTokens() int64 {
+	var n int64
+	for _, r := range sim.WaitQ.Items() {
+		n += r.InputLen() - r.ProgressIndex
+	}
+	return n
+}
+
+// RunningPrefillTokens (ours) returns the prompt tokens still to be prefilled by running
+// requests that are in the middle of a chunked prefill.
+func (sim *Simulator) RunningPrefillTokens() int64 {
+	var n int64
+	if sim.RunningBatch != nil {
+		for _, r := range sim.RunningBatch.Requests {
+			if r.ProgressIndex < r.InputLen() {
+				n += r.InputLen() - r.ProgressIndex
+			}
+		}
+	}
+	return n
+}
+
+// StepTimeFn (ours) exposes the instance's step-time model to control-plane policies that
+// need a latency estimate (Mooncake admission). Read-only; the batch passed in is synthetic.
+func (sim *Simulator) StepTimeFn() func(batch []*Request) int64 {
+	return sim.latencyModel.StepTime
+}
+
 // ResidentAdapterIDs returns the ids of LoRA adapters currently resident on this
 // instance, in a deterministic order (INV-6). Returns nil when the LoRA subsystem
 // is inert (no adapters/capacity configured, or sim/lora not imported), so the

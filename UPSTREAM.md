@@ -39,10 +39,20 @@ Branch: ours
 - sim/bundle.go (second item): "srf" added to validPreemptionPolicies
 - cmd/root.go (fourth item): --preemption-policy help text lists srf
 
+- sim/routing.go: +RoutingSnapshot.QueuedPromptTokens, RunningPrefillTokens (refreshed with QueueDepth)
+- sim/simulator.go (fourth item): +QueuedPromptTokens, RunningPrefillTokens, StepTimeFn accessors
+- sim/cluster/instance.go (second item): wrappers for the three accessors above
+- sim/cluster/snapshot.go: the two prefill-work fields filled next to QueueDepth
+- sim/bundle.go (third item), sim/admission.go: "mooncake" registered (custom constructor only)
+- sim/cluster/deployment.go (second item): +Mooncake* parameters on DeploymentConfig
+- sim/cluster/cluster.go (fourth item): "mooncake" case in the admission switch; the policy receives the instances' step-time model after construction
+- cmd/root.go (fifth item): +--mooncake-mode, --mooncake-ttft-target, --mooncake-tbt-target, --mooncake-theta, --mooncake-decode-duration
+
 ## Files added (ours)
 
 - sim/scheduler_typerank.go
 - sim/batch_formation_srf_test.go
+- sim/admission_mooncake.go, sim/admission_mooncake_test.go
 - sim/batch_formation_ours.go
 - cmd/state_sample.go (periodic per-instance state CSV via the existing read-only sim.ProgressHook)
 - ours/ (specs, run.ps1, run.sh, sweep.py grid driver with B0/B1/floor/oracle/harness profiles, analyze.py steady-state analysis and panel plots, objective.py revenue-management objective, report.py README.pdf generator via pdflatex, visualization-brief.md; results/ and experiments/ gitignored)

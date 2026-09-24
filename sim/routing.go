@@ -39,6 +39,11 @@ type RoutingSnapshot struct {
 	// when the interval is 0. Zero value (nil) ⇒ no adapter resident ⇒ scorer neutral,
 	// preserving byte-identical routing when the LoRA subsystem is inert (INV-6).
 	ResidentAdapters map[string]bool
+
+	// ours: prefill work visible to an admission controller (Mooncake). Refreshed with
+	// QueueDepth (same freshness mode). Zero unless a policy reads them.
+	QueuedPromptTokens   int64 // sum of prompt tokens of the requests in the wait queue
+	RunningPrefillTokens int64 // prompt tokens still to prefill for running requests mid-chunked-prefill
 }
 
 // EffectiveLoad returns the total effective load on this instance:

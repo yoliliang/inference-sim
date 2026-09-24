@@ -104,6 +104,8 @@ type CachedSnapshotProvider struct {
 	// Cache block snapshot management (replaces StaleCacheIndex).
 	cacheEntries     map[InstanceID]cacheEntry
 	cacheLastRefresh int64
+
+	prefillWork bool // ours: fill QueuedPromptTokens / RunningPrefillTokens (Mooncake admission)
 }
 
 // NewCachedSnapshotProvider creates a CachedSnapshotProvider from instances and config.
@@ -155,6 +157,10 @@ func (p *CachedSnapshotProvider) Snapshot(id InstanceID, clock int64) sim.Routin
 	}
 	if p.shouldRefresh(p.config.QueueDepth, lr.QueueDepth, clock) {
 		snap.QueueDepth = inst.QueueDepth()
+		if p.prefillWork { // ours: only when an admission policy reads them (walks the queue)
+			snap.QueuedPromptTokens = inst.QueuedPromptTokens()
+			snap.RunningPrefillTokens = inst.RunningPrefillTokens()
+		}
 		lr.QueueDepth = clock
 	}
 	if p.shouldRefresh(p.config.BatchSize, lr.BatchSize, clock) {
@@ -202,6 +208,10 @@ func (p *CachedSnapshotProvider) RefreshAll(clock int64) {
 		snap := sim.NewRoutingSnapshot(string(id))
 		snap.PreemptionCount = inst.PreemptionCount()
 		snap.QueueDepth = inst.QueueDepth()
+		if p.prefillWork { // ours: only when an admission policy reads them (walks the queue)
+			snap.QueuedPromptTokens = inst.QueuedPromptTokens()
+			snap.RunningPrefillTokens = inst.RunningPrefillTokens()
+		}
 		snap.BatchSize = inst.BatchSize()
 		snap.KVUtilization = inst.KVUtilization()
 		snap.FreeKVBlocks = inst.FreeKVBlocks()
