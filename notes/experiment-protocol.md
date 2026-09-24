@@ -83,3 +83,21 @@ tagged `n<N>_s<S>`. The deliverable is metrics in scale: every per-instance quan
 (throughput, evictions, objective value) and every latency quantity plotted against n on a
 log2 axis with a least-squares power-law fit n^b (scaling_panel.png, scaling_fits.csv), and
 the report states the exponents. K = 5 seeds per n is the working value for scaling runs.
+
+## 7. Candidate policies and comparisons
+
+A candidate policy is a profile in sweep.py named `<baseline>_<policy>` (B1_srf, ...) that
+differs from its baseline in exactly one of the five decision points; ours/policies.md is
+the ledger (paper, decision point, BLIS flag, departures from the paper, implementing
+commit). A candidate is run with the baseline's own sweep.py arguments, only `--profile`
+changes, so the folders pair one to one: `<date>_scaling_B1_srf_scale64_load1.2` against
+`2026-09-13_scaling_B1_scale64_load1.2`. Every seed must be present in both folders.
+
+A comparison is a third kind of folder, `<date>_compare_<name>`, written by
+`python ours/compare.py <name> --base <folder> --cand <folder> [--cand ...]`. It simulates
+nothing: it pairs the two folders' per-path rows on (n, rate, seed, type), writes
+candidate-minus-baseline differences (compare_runs.csv, compare.csv), the level and
+difference figures, a manifest naming the folders and commits, and a README whose Result
+table is generated; the interpretation is written by hand. `python ours/report.py <folder>`
+produces its report.pdf. Several candidates go into one comparison folder as extra
+`--cand` arguments, so the paper's policy table comes from one place.

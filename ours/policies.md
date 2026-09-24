@@ -18,4 +18,4 @@ House style: no em dashes or en dashes.
 
 | Profile | Fork commit | Tests | Baseline byte-identity check |
 |---|---|---|---|
-| B1_srf | (filled at commit) | sim/batch_formation_srf_test.go: fewest-KV victim, tie to tail, repeat until enough, name registered | seed-42 anchors 700 / 29,010 / 6,155 / 4,801 unchanged with --preemption-policy fcfs |
+| B1_srf | f272177a | sim/batch_formation_srf_test.go: fewest-KV victim, tie to tail, repeat until enough, name registered | seed-42 anchors 700 / 29,010 / 6,155 / 4,801 unchanged with --preemption-policy fcfs |

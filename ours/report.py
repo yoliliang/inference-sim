@@ -14,6 +14,10 @@ Structure (an e-companion numerical-details section, plain language throughout):
     10 Artifacts                     files in the folder
     Appendix                         the six-panel figure of the first sample path at every rate
 
+A comparison folder (manifest "experiment": "compare", written by ours/compare.py) gets a
+shorter report: question, what is compared, method (paired differences on common random
+numbers), the difference tables per type, the two figures, notes, artifacts.
+
 Compiles with pdflatex (MiKTeX). Re-runnable; README.md is the editable text source.
 """
 import glob
@@ -398,7 +402,118 @@ def build(exp):
     print("wrote", os.path.join(exp, "report.pdf"))
 
 
+COMPARE_METRICS = [  # column stem, label, scale, unit (mirrors ours/compare.py METRICS)
+    ("value_per_s", "objective value per second, whole system", 1, ""),
+    ("output_tok_per_s", "output tokens per second, whole system", 1, ""),
+    ("preempt_per_s", "evictions per second, whole system", 1, ""),
+    ("wasted_tok_per_arrival", "wasted tokens per arrival", 1, ""),
+    ("delay_mean_ms", "mean queue wait", 1e-3, "s"),
+    ("ttft_p99_ms", "TTFT p99", 1e-3, "s"),
+    ("e2e_mean_ms", "mean E2E", 1e-3, "s"),
+    ("unfinished_frac", "unfinished, percent of arrivals", 100, ""),
+]
+
+
+def compare_table(tab, t, label, cols):
+    """One LaTeX table: rows are grid points, columns are candidate minus baseline with band."""
+    xcol = "n" if tab.n.nunique() > 1 else "rate"
+    a = tab[tab.type == t].sort_values(xcol)
+    if a.empty:
+        return ""
+    head = [esc(xcol), "seeds"] + [esc(next(m for m in COMPARE_METRICS if m[0] == c)[1]) for c in cols]
+    rows = [r"\begin{table}[H]\centering\scriptsize", r"\resizebox{\linewidth}{!}{",
+            r"\begin{tabular}{@{}rr" + "r" * len(cols) + "@{}}", r"\toprule",
+            " & ".join(head) + r" \\", r"\midrule"]
+    for _, r in a.iterrows():
+        cells = []
+        for c in cols:
+            spec = next(m for m in COMPARE_METRICS if m[0] == c)
+            d, b, rel = r[c + "_diff"] * spec[2], r[c + "_band"] * spec[2], r[c + "_rel"]
+            s = f"{d:+,.3g}" + (f" {spec[3]}" if spec[3] else "") + (f" $\\pm$ {b:,.2g}" if not pd.isna(b) else "")
+            if not pd.isna(rel):
+                s += f" ({rel * 100:+.1f}\\%)"
+            cells.append(s)
+        rows.append(f"{r[xcol]:g} & {int(r['n_seeds'])} & " + " & ".join(cells) + r" \\")
+    rows += [r"\bottomrule", r"\end{tabular}}",
+             rf"\caption{{{esc(label)} minus B1, {esc(t)}: mean paired difference over seeds, $\pm$ the 95 percent band, and the relative change against the baseline mean in parentheses.}}",
+             r"\end{table}"]
+    return "\n".join(rows)
+
+
+def build_compare(exp, m):
+    name = os.path.basename(exp)
+    md_path = os.path.join(exp, "README.md")
+    md = open(md_path, encoding="utf-8").read() if os.path.exists(md_path) else ""
+    parts = re.split(r"^## ", md, flags=re.M)
+    question = re.sub(r"^# .*$", "", parts[0], flags=re.M).strip()
+    rest = "".join("## " + p for p in parts[1:] if not p.startswith("Result"))  # the generated Result table is re-derived below
+    tab = pd.read_csv(os.path.join(exp, "compare.csv"))
+    cols = [c for c in m.get("metrics", []) if c + "_diff" in tab.columns]
+    labels = [c["label"] for c in m["candidates"]]
+
+    tex = [r"""\documentclass[10pt]{article}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{booktabs,graphicx,float,longtable,array}
+\usepackage[hidelinks]{hyperref}
+\setlength{\parskip}{4pt}\setlength{\parindent}{0pt}
+\begin{document}"""]
+    tex.append(rf"\section*{{Numerical details: {esc(name)}}} (policy comparison)")
+    tex.append(r"\subsection*{1. Question}")
+    tex.append(md_to_tex(question) if question else "(none)")
+
+    tex.append(r"\subsection*{2. What is compared}")
+    rows = [("Baseline", f"{m['baseline'].get('profile')}: folder {os.path.basename(m['baseline']['folder'])}, fork commit {str(m['baseline'].get('fork_commit'))[:12]}")]
+    for c in m["candidates"]:
+        rows.append((f"Candidate {c['label']}", f"profile {c.get('profile')}: folder {os.path.basename(c['folder'])}, fork commit {str(c.get('fork_commit'))[:12]}"))
+    rows.append(("Policy definitions", "ours/policies.md gives, for every candidate profile, the paper, the decision point it changes, the BLIS flag and the departures from the paper. The baseline and each candidate differ in exactly one decision."))
+    tex.append(kv_table(rows))
+
+    tex.append(r"\subsection*{3. Method}")
+    tex.append(para("No new simulation: the inputs are the per-path window statistics and objective values of the folders above, which share the grid (system scale n or arrival rate) and the seeds. For every grid point, seed and request type the candidate's statistic minus the baseline's is one paired difference; the same seed gives the same arrivals and lengths under both policies (common random numbers), so the difference isolates the policy. The tables and figures report the mean paired difference over seeds with a 95 percent band (Student t half-width over the paired differences), and the relative change against the baseline mean. Paired bands are much narrower than the bands of either experiment alone, which is why the comparison is a separate step."))
+    tex.append(para("Sign convention: a positive difference means the candidate has the larger value. For the objective and throughput, positive is better; for waits, evictions, waste and the unfinished fraction, negative is better."))
+
+    tex.append(r"\subsection*{4. Results}")
+    for lab in labels:
+        sub = tab[tab.candidate == lab] if "candidate" in tab.columns else tab
+        for t in ("all", "type1", "type2", "type3"):
+            tex.append(compare_table(sub, t, lab, cols))
+    for fig, cap in [("compare_levels.png", "Levels: baseline and candidates against the grid, all types, mean over seeds with the shaded 95 percent band."),
+                     ("compare_diffs.png", "Paired differences (candidate minus baseline) against the grid, by request type, mean over seeds with the shaded 95 percent band; the grey line is zero.")]:
+        if os.path.exists(os.path.join(exp, fig)):
+            tex.append(rf"\begin{{figure}}[H]\centering\includegraphics[width=\linewidth]{{{fig}}}\caption{{{esc(cap)}}}\end{{figure}}")
+
+    tex.append(r"\subsection*{5. Notes and interpretation}")
+    tex.append(md_to_tex(rest) if rest.strip() else "(none)")
+    tex.append(r"\subsection*{6. Artifacts}")
+    files = sorted(f for f in os.listdir(exp) if not f.endswith((".tex", ".aux", ".log", ".out")))
+    tex.append(esc(", ".join(files)))
+    tex.append(r"\end{document}")
+    return tex
+
+
+def compile_tex(exp, tex):
+    texpath = os.path.join(exp, "report.tex")
+    open(texpath, "w", encoding="utf-8").write("\n\n".join(tex))
+    for _ in range(2):
+        r = subprocess.run(["pdflatex", "-interaction=nonstopmode", "-halt-on-error", "report.tex"],
+                           cwd=exp, capture_output=True, text=True)
+    if r.returncode != 0:
+        print(r.stdout[-3000:])
+        sys.exit("pdflatex failed; report.tex kept for inspection")
+    for ext in (".tex", ".aux", ".log", ".out"):
+        try:
+            os.remove(os.path.join(exp, "report" + ext))
+        except OSError:
+            pass
+    print("wrote", os.path.join(exp, "report.pdf"))
+
+
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         sys.exit(__doc__)
-    build(sys.argv[1])
+    _exp = os.path.abspath(sys.argv[1])
+    _m = json.load(open(os.path.join(_exp, "manifest.json")))
+    if _m.get("experiment") == "compare":
+        compile_tex(_exp, build_compare(_exp, _m))
+    else:
+        build(_exp)
