@@ -173,6 +173,13 @@ func (i *InstanceSimulator) RunningPrefillTokens() int64 { return i.sim.RunningP
 // StepTimeFn (ours) wraps Simulator.StepTimeFn.
 func (i *InstanceSimulator) StepTimeFn() func(batch []*sim.Request) int64 { return i.sim.StepTimeFn() }
 
+// Shared-queue model wrappers (ours).
+func (i *InstanceSimulator) SetSharedQueue(a sim.SharedQueueAccess)     { i.sim.SetSharedQueue(a) }
+func (i *InstanceSimulator) IsIdle() bool                                { return i.sim.IsIdle() }
+func (i *InstanceSimulator) WakeStep(now int64) bool                     { return i.sim.WakeStep(now) }
+func (i *InstanceSimulator) AdoptSharedRequest(r *sim.Request) bool      { return i.sim.AdoptSharedRequest(r) }
+func (i *InstanceSimulator) QueueingTimeFn() func(*sim.Request) int64    { return i.sim.QueueingTimeFn() }
+
 // BatchSize returns the number of requests in the running batch, or 0 if nil.
 func (i *InstanceSimulator) BatchSize() int {
 	return i.sim.BatchSize()

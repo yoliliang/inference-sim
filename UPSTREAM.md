@@ -48,11 +48,24 @@ Branch: ours
 - sim/cluster/cluster.go (fourth item): "mooncake" case in the admission switch; the policy receives the instances' step-time model after construction
 - cmd/root.go (fifth item): +--mooncake-mode, --mooncake-ttft-target, --mooncake-tbt-target, --mooncake-theta, --mooncake-decode-duration
 
+- sim/batch_formation.go (third item): +BatchContext.SharedQueue
+- sim/config.go (second item): +PolicyConfig.SetPolicy, WithSetPolicy
+- sim/bundle.go (fourth item): "pooled" batch formation registered
+- sim/batch_formation_ours.go: NewBatchFormationStrategyWithSet (pooled strategy)
+- sim/simulator.go (fifth item): shared-queue hooks (SetSharedQueue, IsIdle, WakeStep, QueueingTimeFn, AdoptSharedRequest), Step and scheduleNextStep consider the shared queue, emptyStepAt spin guard
+- sim/cluster/instance.go (third item): shared-queue wrappers
+- sim/cluster/deployment.go (third item): +SharedQueuePush, SetPolicy
+- sim/cluster/cluster.go (fifth item): shared queue construction, wake on completion, horizon rows, INV-1 term
+- sim/cluster/cluster_event.go (second item): SharedQueueArrivalEvent, sharedQueueAccess, wakeIdleInstance; admission branches to the shared queue in pooled mode
+- sim/progress_hook.go (second item): +ClusterSnapshot.SharedQueueDepth
+- cmd/root.go (sixth item), cmd/state_sample.go (second item): +--shared-queue-push, --set-policy; cluster_shared_queue column
+
 ## Files added (ours)
 
 - sim/scheduler_typerank.go
 - sim/batch_formation_srf_test.go
 - sim/admission_mooncake.go, sim/admission_mooncake_test.go
+- sim/shared_queue.go, sim/batch_formation_pooled.go, sim/batch_formation_pooled_test.go
 - sim/batch_formation_ours.go
 - cmd/state_sample.go (periodic per-instance state CSV via the existing read-only sim.ProgressHook)
 - ours/ (specs, run.ps1, run.sh, sweep.py grid driver with B0/B1/floor/oracle/harness profiles, analyze.py steady-state analysis and panel plots, objective.py revenue-management objective, report.py README.pdf generator via pdflatex, visualization-brief.md; results/ and experiments/ gitignored)

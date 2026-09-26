@@ -54,6 +54,8 @@ type ClusterSimulator struct {
 	routingPolicy     sim.RoutingPolicy
 	rejectedRequests  int            // EC-2: count of requests rejected by admission policy
 	rejectedRequestMetrics []sim.RequestMetrics // ours: one row per admission rejection, for the file-only Requests[] array
+	sharedQueue            *sim.SharedQueue     // ours: the pooled control model's shared queue (nil in push mode)
+	sharedQueueMetrics     []sim.RequestMetrics // ours: rows for requests still in the shared queue at the horizon
 	progressRequestDetail  bool                 // ours: fill InstanceSnapshot.Requests in progress snapshots
 	routingRejections int            // I13: count of requests rejected at routing (no routable instances)
 	shedByTier        map[string]int // per-SLOClass shedding: admission rejections + gateway queue shed + in-flight evictions
@@ -488,6 +490,15 @@ func NewClusterSimulator(config DeploymentConfig, requestSource RequestSource, o
 	// Deferred instances are registered via CachedSnapshotProvider.AddInstance
 	// when NodeReadyEvent.Execute constructs them (Phase 4, T017).
 	cs.snapshotProvider = NewCachedSnapshotProvider(instanceMap, newObservabilityConfig(config.SnapshotRefreshInterval, config.CacheSignalDelay))
+
+	// ours: pooled control model. One shared queue; each instance gets its own access
+	// object so that Take knows which instance adopts the request.
+	if config.SharedQueuePush {
+		cs.sharedQueue = &sim.SharedQueue{}
+		for _, inst := range cs.instances {
+			inst.SetSharedQueue(&sharedQueueAccess{cs: cs, inst: inst})
+		}
+	}
 
 	// ours: the Mooncake admission rule estimates TTFT and TBT with the instances' own
 	// step-time model (all instances share one config, so the first one's model serves).
@@ -944,6 +955,9 @@ func (c *ClusterSimulator) Run() error {
 				// T042: consume warm-up slots for newly completed requests (Phase 1A).
 				// Each completion on a WarmingUp instance counts against the warm-up budget.
 				completionDelta := int(completedAfter - completedBefore)
+				if c.sharedQueue != nil && c.sharedQueue.Len() > 0 { // ours: freed capacity, offer the shared queue to an idle instance
+					c.wakeIdleInstance()
+				}
 				for i := 0; i < completionDelta; i++ {
 					if inst.IsWarmingUp() {
 						inst.ConsumeWarmUpRequest()
@@ -986,6 +1000,15 @@ func (c *ClusterSimulator) Run() error {
 	}
 
 	c.maybeDeliverProgressSnapshot(true)
+	// ours: requests still waiting in the shared queue at the horizon are unfinished rows
+	// (arrival time kept, so the window block counts them and charges the censored sojourn).
+	if c.sharedQueue != nil {
+		for _, r := range c.sharedQueue.Items() {
+			rm := sim.NewRequestMetrics(r, float64(r.ArrivalTime)/1e6)
+			rm.Status = "unfinished"
+			c.sharedQueueMetrics = append(c.sharedQueueMetrics, rm)
+		}
+	}
 
 	// 4. Finalize all instances (populates StillQueued/StillRunning)
 	for _, inst := range c.instances {
@@ -1170,6 +1193,7 @@ func (c *ClusterSimulator) maybeDeliverProgressSnapshot(isFinal bool) {
 		TotalPreemptions:  c.preemptionsTotal(),
 		InstanceSnapshots: instanceSnaps,
 		RejectedRequests:  c.rejectedRequests,
+		SharedQueueDepth:  c.sharedQueueDepth(), // ours
 		RoutingRejections: c.routingRejections,
 		GatewayQueueDepth: gatewayQueueDepth,
 		GatewayQueueShed:  gatewayQueueShed,
@@ -1820,6 +1844,11 @@ func mergeInt64Map(dst, src map[string]int64, mapName string) {
 func (c *ClusterSimulator) aggregateMetrics() *sim.Metrics {
 	merged := sim.NewMetrics()
 	merged.ExtraRequests = append(merged.ExtraRequests, c.rejectedRequestMetrics...) // ours
+	merged.ExtraRequests = append(merged.ExtraRequests, c.sharedQueueMetrics...)    // ours
+	merged.StillQueued += len(c.sharedQueueMetrics)                                 // ours: INV-1 term for the shared queue
+	for _, rm := range c.sharedQueueMetrics {                                       // ours: the push path counts input tokens at enqueue
+		merged.TotalInputTokens += rm.NumPrefillTokens
+	}
 	for _, inst := range c.instances {
 		m := inst.Metrics()
 		merged.CompletedRequests += m.CompletedRequests
@@ -2480,4 +2509,12 @@ func (cs *ClusterSimulator) executeDisaggregatedRouting(req *sim.Request, time i
 		},
 		seqID: cs.nextSeqID(),
 	})
+}
+
+// sharedQueueDepth (ours) returns the number of requests waiting in the shared queue (0 in push mode).
+func (c *ClusterSimulator) sharedQueueDepth() int {
+	if c.sharedQueue == nil {
+		return 0
+	}
+	return c.sharedQueue.Len()
 }

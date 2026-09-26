@@ -102,6 +102,8 @@ var (
 	tokenBucketCapacity     float64            // Token bucket capacity
 	tokenBucketRefillRate   float64            // Token bucket refill rate (tokens/second)
 	tierShedThreshold       int                // Tier-shed overload threshold (0 = any load)
+	sharedQueuePush         bool               // ours: pooled control model (one shared queue, set decision per step)
+	setPolicy               string             // ours: set policy of the pooled batch formation
 	mooncakeMode            string             // ours: Mooncake admission mode (now | predict)
 	mooncakeTTFTTargetS     float64            // ours
 	mooncakeTBTTargetMs     float64            // ours
@@ -1281,6 +1283,21 @@ func resolvePolicies(cmd *cobra.Command) ([]sim.ScorerConfig, *sim.PolicyBundle)
 	if !sim.IsValidScheduler(scheduler) {
 		logrus.Fatalf("Unknown scheduler %q. Valid: %s", scheduler, strings.Join(sim.ValidSchedulerNames(), ", "))
 	}
+	if sharedQueuePush { // ours
+		if batchFormation != "" && batchFormation != "vllm" && batchFormation != "pooled" {
+			logrus.Fatalf("--shared-queue-push selects --batch-formation pooled; got %q", batchFormation)
+		}
+		batchFormation = "pooled"
+		if !sim.IsValidSetPolicy(setPolicy) {
+			logrus.Fatalf("unknown --set-policy %q", setPolicy)
+		}
+		if flowControlEnabled {
+			logrus.Fatalf("--shared-queue-push cannot be combined with --flow-control (the shared queue replaces the gateway queue)")
+		}
+		if prefillInstances > 0 || decodeInstances > 0 {
+			logrus.Fatalf("--shared-queue-push does not support prefill/decode disaggregation")
+		}
+	}
 	if !sim.IsValidPreemptionPolicy(preemptionPolicy) {
 		logrus.Fatalf("Unknown preemption policy %q. Valid: %s", preemptionPolicy, strings.Join(sim.ValidPreemptionPolicyNames(), ", "))
 	}
@@ -1524,7 +1541,9 @@ func registerSimConfigFlags(cmd *cobra.Command) {
 	// Scheduler and preemption config
 	cmd.Flags().StringVar(&scheduler, "scheduler", "fcfs", "Instance scheduler: fcfs, priority-fcfs, sjf, reverse-priority")
 	cmd.Flags().StringVar(&preemptionPolicy, "preemption-policy", "fcfs", "Preemption victim selection: fcfs (tail-of-batch), priority (least-urgent SLO tier), srf (fewest KV entries held, Kim et al. 2024)")
-	cmd.Flags().StringVar(&batchFormation, "batch-formation", "vllm", "ours: batch-formation strategy: vllm (upstream default), ours (custom FormBatch in sim/batch_formation_ours.go)")
+	cmd.Flags().StringVar(&batchFormation, "batch-formation", "vllm", "ours: batch-formation strategy: vllm (upstream default), ours (custom FormBatch in sim/batch_formation_ours.go), pooled (set by --shared-queue-push)")
+	cmd.Flags().BoolVar(&sharedQueuePush, "shared-queue-push", false, "ours: pooled control model: admitted requests wait in one cluster-level shared queue and every instance takes from it at its step boundaries (no routing decision); selects batch formation pooled")
+	cmd.Flags().StringVar(&setPolicy, "set-policy", "fcfs-pool", "ours: set policy of the pooled batch formation: fcfs-pool (own preempted requests first, then the shared queue in arrival order, stop at the first that does not fit)")
 
 	// Policy bundle config
 	cmd.Flags().StringVar(&policyConfigPath, "policy-config", "", "Path to YAML policy configuration file")
@@ -2534,7 +2553,7 @@ var runCmd = &cobra.Command{
 				// wires the SAME dpPlan.PerRankDP from the SAME resolveDPPlacement, so the two
 				// paths agree for every config both support (INV-13).
 				ModelHardwareConfig:  sim.NewModelHardwareConfig(lr.ModelConfig, lr.HWConfig, model, gpu, tensorParallelism, dpPlan.PerRankDP, enableExpertParallel, moeCommBackend, lr.Backend, maxModelLen, dpPlan.EPGroupOptions()...),
-				PolicyConfig:         sim.NewPolicyConfig(scheduler, preemptionPolicy, sim.WithBatchFormation(batchFormation)),
+				PolicyConfig:         sim.NewPolicyConfig(scheduler, preemptionPolicy, sim.WithBatchFormation(batchFormation), sim.WithSetPolicy(setPolicy)),
 				LoRAConfig:           loraCfg,
 				SpeculativeConfig:    resolveSpeculativeConfig(cmd),
 				SLOPriorityOverrides: sloPriorityOverrides,
@@ -2550,6 +2569,8 @@ var runCmd = &cobra.Command{
 			TraceLevel:                      traceLevel,
 			CounterfactualK:                 counterfactualK,
 			ReleaseCompletedRequests:        releaseCompleted, // ours
+			SharedQueuePush:                 sharedQueuePush,  // ours
+			SharedQueueSetPolicy:            setPolicy,        // ours
 			SnapshotRefreshInterval:         snapshotRefreshInterval,
 			CacheSignalDelay:                cacheSignalDelay,
 			PrefillInstances:                prefillInstances,

@@ -247,6 +247,18 @@ func (e *AdmissionDecisionEvent) Execute(cs *ClusterSimulator) {
 	// cs.poolsConfigured(): disaggregated routing for PD topology, standard routing
 	// otherwise. This mirrors llm-d-inference-scheduler's disagg-profile-handler,
 	// which handles both paths inside a single scheduling plugin entry point.
+	if cs.sharedQueue != nil { // ours: pooled control model, no routing decision
+		delay := cs.routingLatency
+		if len(cs.instances) > 0 {
+			delay += cs.instances[0].QueueingTimeFn()(e.request) // the alpha delay the push path charges on instance arrival
+		}
+		heap.Push(&cs.clusterEvents, clusterEventEntry{
+			event: &SharedQueueArrivalEvent{time: e.time + delay, request: e.request},
+			seqID: cs.nextSeqID(),
+		})
+		return
+	}
+
 	heap.Push(&cs.clusterEvents, clusterEventEntry{
 		event: &RoutingDecisionEvent{
 			time:    e.time + cs.routingLatency,
@@ -254,6 +266,53 @@ func (e *AdmissionDecisionEvent) Execute(cs *ClusterSimulator) {
 		},
 		seqID: cs.nextSeqID(),
 	})
+}
+
+// SharedQueueArrivalEvent (ours): an admitted request becomes schedulable in the shared
+// queue; an idle instance, if any, is offered a step now.
+type SharedQueueArrivalEvent struct {
+	time    int64
+	request *sim.Request
+}
+
+func (e *SharedQueueArrivalEvent) Timestamp() int64 { return e.time }
+func (e *SharedQueueArrivalEvent) Priority() int     { return 2 }
+
+func (e *SharedQueueArrivalEvent) Execute(cs *ClusterSimulator) {
+	cs.sharedQueue.Push(e.request)
+	cs.wakeIdleInstance()
+}
+
+// wakeIdleInstance (ours) offers a step now to the lowest-index idle routable instance.
+// Busy instances see the shared queue at their next step boundary.
+func (cs *ClusterSimulator) wakeIdleInstance() {
+	for _, inst := range cs.instances {
+		if inst.IsRoutable() && inst.HasSim() && inst.IsIdle() && inst.WakeStep(cs.clock) {
+			return
+		}
+	}
+}
+
+// sharedQueueAccess (ours) is one instance's view of the shared queue.
+type sharedQueueAccess struct {
+	cs   *ClusterSimulator
+	inst *InstanceSimulator
+}
+
+func (a *sharedQueueAccess) Candidates() []*sim.Request { return a.cs.sharedQueue.Items() }
+func (a *sharedQueueAccess) Len() int                   { return a.cs.sharedQueue.Len() }
+
+// Take moves r from the shared queue to this instance: in-flight accounting first (a drop
+// inside AdoptSharedRequest is decremented by the cluster loop's completion delta), then
+// adoption.
+func (a *sharedQueueAccess) Take(r *sim.Request) bool {
+	if !a.cs.sharedQueue.Remove(r) {
+		panic(fmt.Sprintf("sharedQueueAccess.Take: request %s is not in the shared queue", r.ID))
+	}
+	id := string(a.inst.ID())
+	a.cs.inFlightRequests[id]++
+	r.AssignedInstance = id
+	return a.inst.AdoptSharedRequest(r)
 }
 
 // RoutingDecisionEvent represents the routing decision point for a request.

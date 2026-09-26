@@ -113,6 +113,12 @@ type DeploymentConfig struct {
 	GAIEQDThreshold float64 // queue depth threshold per instance (default 5)
 	GAIEKVThreshold float64 // KV cache utilization threshold (default 0.8)
 
+	// ours: pooled control model. When SharedQueuePush is set, admitted requests wait in one
+	// cluster-level shared queue and every instance's batch formation (strategy "pooled")
+	// takes from it at its step boundaries; routing as a separate decision does not exist.
+	SharedQueuePush bool
+	SharedQueueSetPolicy string // set policy name for the pooled batch formation (the SimConfig.SetPolicy field carries it into the instances)
+
 	// ours: Mooncake admission parameters. Only used when AdmissionPolicy = "mooncake".
 	MooncakeMode            string  // "now" (Early Rejection) or "predict" (Early Rejection based on Prediction)
 	MooncakeTTFTTargetS     float64 // TTFT target, seconds

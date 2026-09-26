@@ -70,8 +70,9 @@ counters, not as per-request rows.
 
 ## 3. The change
 
-Additive: a new cluster mode `--cluster-queue pooled` (default `push`, the current code
-path untouched, so INV-6 byte identity of every existing experiment is trivial).
+Additive: a new cluster mode `--shared-queue-push` (off by default, the current code path
+untouched, so INV-6 byte identity of every existing experiment is trivial). The user chose
+the flag name; `--set-policy` names the set policy (fcfs-pool).
 
 ### 3.1 Shared queue (new, sim/cluster/pool.go)
 
@@ -185,3 +186,28 @@ one hour of simulation).
 1. Preempted requests: stay in W_g (proposed, vLLM convention) or return to the pool.
 2. Wake-up when several instances are idle: lowest index (proposed) or policy-chosen.
 3. Whether the set policy may also pick the prefill chunk size now, or only later (Sarathi).
+
+## 7. Implementation record (2026-09-26)
+
+Implemented as planned, flag `--shared-queue-push`, set policy `--set-policy fcfs-pool`,
+profile `C` in sweep.py. User decisions: evicted requests stay on their instance; the
+lowest-index idle instance is woken; prefill chunking stays vLLM's rule.
+
+Validation results:
+
+1. Default path: seed-42 anchors 700 / 29,010 / 6,155 / 4,801 unchanged; `go test ./sim
+   ./sim/cluster ./cmd` green except the known CRLF golden.
+2. Equivalence at n = 1 (seed 42, 22.5 req/s, 300 s, 15,909 blocks): B1 and the shared
+   queue give identical aggregates (6,853 injected, 5,690 completed, 990 queued, 173
+   running, 498 evictions, identical TTFT, E2E and wait distributions) and identical
+   per-request metrics for every request; the only differences are two requests that
+   arrived in the last 10 ms and were still in the delay pipeline (a row exists under push,
+   none under the shared queue) and a 0.03 s difference in the recorded run duration.
+   The upstream "KV allocation failed for completing request" warning fires 7 times in
+   both runs (an upstream accounting message under a full cache, not ours).
+3. Sanity at n = 4 (seed 1, 300 s): inside capacity (67.5 req/s) the shared queue cuts the
+   mean wait from 32.9 to 22.7 ms and TTFT p99 from 112 to 89 ms at equal throughput;
+   above capacity (90 req/s) waits and unfinished fractions are the same (13.0 versus 13.1
+   s, 1.7 percent), the backlog sits in the shared queue (mean 199, max 496 in the window)
+   and the local queues hold only preempted requests (0.26 on average).
+4. Scaling and compare folders: see 2026-09-26_compare_C_scale_load0.9 and _load1.2.

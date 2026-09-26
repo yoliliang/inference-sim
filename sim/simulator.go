@@ -114,6 +114,8 @@ type Simulator struct {
 	maxNumBatchedTokens       int64
 	longPrefillTokenThreshold int64
 	stepEvent                 Event
+	sharedQueue               SharedQueueAccess // ours: nil in push mode
+	emptyStepAt               int64             // ours: clock of the last step that formed an empty batch (-1 = never)
 	stepCount                 int
 	// map of request IDs to total num computed tokens (including cached tokens)
 	reqNumComputedTokens map[string]int64
@@ -196,7 +198,7 @@ func NewSimulator(cfg SimConfig, kvStore KVStore, latencyModel LatencyModel) (*S
 				blocksForMaxLen, cfg.MaxModelLen, cfg.BlockSizeTokens, cfg.TotalKVBlocks)
 		}
 	}
-	batchFormation := NewBatchFormationStrategy(cfg.BatchFormation, cfg.PreemptionPolicy) // ours
+	batchFormation := NewBatchFormationStrategyWithSet(cfg.BatchFormation, cfg.PreemptionPolicy, cfg.SetPolicy) // ours
 
 	s := &Simulator{
 		Clock:                     0,
@@ -868,7 +870,7 @@ func (sim *Simulator) recordRequestCompletion(req *Request) {
 // sim.stepEvent here prevents future QueuedEvent INV-8 guards from seeing a stale
 // non-nil pointer and skipping their step-scheduling.
 func (sim *Simulator) Step(now int64) {
-	if sim.RunningBatch == nil && sim.WaitQ.Len() == 0 {
+	if sim.RunningBatch == nil && sim.WaitQ.Len() == 0 && !sim.sharedWork() {
 		sim.stepEvent = nil
 		return
 	}
@@ -918,6 +920,7 @@ func (sim *Simulator) scheduleBatch(now int64) {
 		Now:                   now,
 		StepCount:             sim.stepCount,
 		ComputedTokens:        sim.reqNumComputedTokens,
+		SharedQueue:           sim.sharedQueue, // ours
 	}
 	if sim.residentAdapters != nil {
 		batchCtx.AdapterResident = sim.residentAdapters.IsResident
@@ -931,6 +934,13 @@ func (sim *Simulator) scheduleBatch(now int64) {
 
 	// Apply result: update running batch
 	sim.RunningBatch = batchResult.RunningBatch
+	if sim.sharedQueue != nil { // ours: an idle instance that took nothing must not spin on a non-empty shared queue
+		if len(sim.RunningBatch.Requests) == 0 {
+			sim.emptyStepAt = now
+		} else {
+			sim.emptyStepAt = -1
+		}
+	}
 
 	// Record preemption metrics and emit debug log for each preempted request
 	for _, p := range batchResult.Preempted {
@@ -1325,10 +1335,88 @@ func (sim *Simulator) scheduleNextStep(now, currStepAdvance int64, remaining []*
 		// AdapterLoadCompletionEvent — which re-forms a step on completion via
 		// ScheduleStepIfIdle. Scheduling an empty step here instead would spin one
 		// step per tick for the whole load. Inert when no LoRA (loadingAdapter == "").
-		if sim.WaitQ.Len() > 0 && sim.loadingAdapter == "" {
+		if (sim.WaitQ.Len() > 0 || (sim.sharedWork() && sim.emptyStepAt != now)) && sim.loadingAdapter == "" {
 			pbe := StepEvent{time: now + currStepAdvance}
 			sim.Schedule(&pbe)
 			sim.stepEvent = &pbe
 		}
 	}
+}
+
+// sharedWork (ours) reports whether the shared queue holds candidates for this instance.
+func (sim *Simulator) sharedWork() bool {
+	return sim.sharedQueue != nil && sim.sharedQueue.Len() > 0
+}
+
+// SetSharedQueue (ours) attaches the cluster's shared queue view to this instance.
+func (sim *Simulator) SetSharedQueue(a SharedQueueAccess) {
+	sim.sharedQueue = a
+	sim.emptyStepAt = -1
+}
+
+// IsIdle (ours) reports whether no step is scheduled on this instance.
+func (sim *Simulator) IsIdle() bool { return sim.stepEvent == nil }
+
+// WakeStep (ours) schedules a step now on an idle instance, unless the instance already
+// formed an empty batch at this very clock (nothing it could take), which would spin.
+func (sim *Simulator) WakeStep(now int64) bool {
+	if sim.stepEvent != nil || sim.emptyStepAt == now {
+		return false
+	}
+	pbe := &StepEvent{time: now}
+	sim.Schedule(pbe)
+	sim.stepEvent = pbe
+	return true
+}
+
+// QueueingTimeFn (ours) exposes the alpha queueing delay so that the cluster can charge it
+// before a request enters the shared queue, exactly when the push path would.
+func (sim *Simulator) QueueingTimeFn() func(*Request) int64 {
+	return sim.latencyModel.QueueingTime
+}
+
+// AdoptSharedRequest (ours) makes a request taken from the shared queue this instance's:
+// the per-request metrics row is created and the servability guards of EnqueueRequest are
+// applied, but the request is not put in the wait queue (the caller admits it to the batch
+// in the same step). Returns false when the request had to be dropped as unservable.
+func (sim *Simulator) AdoptSharedRequest(r *Request) bool {
+	sim.Metrics.Requests[r.ID] = NewRequestMetrics(r, float64(r.ArrivalTime)/1e6)
+	drop := func(why string) bool {
+		logrus.Warnf("dropping request %s taken from the shared queue: %s", r.ID, why)
+		sim.Metrics.DroppedUnservable++
+		delete(sim.Metrics.Requests, r.ID)
+		return false
+	}
+	if r.MaxOutputLen == 0 && sim.maxModelLen > 0 && r.InputLen() < sim.maxModelLen {
+		r.MaxOutputLen = int(sim.maxModelLen) - int(r.InputLen())
+	}
+	if r.MaxOutputLen < 0 {
+		return drop("negative MaxOutputLen")
+	}
+	if sim.maxModelLen > 0 {
+		if r.InputLen() >= sim.maxModelLen {
+			return drop("input length reaches MaxModelLen")
+		}
+		if r.MaxOutputLen > 0 && r.InputLen()+int64(r.MaxOutputLen) > sim.maxModelLen {
+			return drop("input plus output budget exceeds MaxModelLen")
+		}
+	}
+	if blocksNeeded := (r.InputLen() + sim.KVCache.BlockSize() - 1) / sim.KVCache.BlockSize(); blocksNeeded > sim.KVCache.TotalCapacity() {
+		return drop("input does not fit in the KV cache")
+	}
+	sim.Metrics.TotalInputTokens += int(r.InputLen())
+	if r.Deadline > 0 && r.Deadline <= sim.Clock {
+		r.State = StateTimedOut
+		sim.Metrics.TimedOutRequests++
+		delete(sim.Metrics.Requests, r.ID)
+		return false
+	}
+	if sim.sloMap == nil {
+		sim.sloMap = DefaultSLOPriorityMap()
+	}
+	r.Priority = float64(sim.sloMap.InvertForVLLM(r.SLOClass))
+	if r.Deadline > 0 && r.Deadline <= sim.Horizon {
+		sim.Schedule(&TimeoutEvent{time: r.Deadline, Request: r})
+	}
+	return true
 }

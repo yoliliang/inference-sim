@@ -22,12 +22,20 @@ func (o *OursBatchFormation) FormBatch(ctx BatchContext) BatchResult {
 // NewBatchFormationStrategy selects a BatchFormation by name (ours).
 // "" and "vllm" return the upstream VLLMBatchFormation unchanged.
 func NewBatchFormationStrategy(strategy, preemptionPolicy string) BatchFormation {
+	return NewBatchFormationStrategyWithSet(strategy, preemptionPolicy, "")
+}
+
+// NewBatchFormationStrategyWithSet is NewBatchFormationStrategy plus the set policy of the
+// pooled strategy (ours).
+func NewBatchFormationStrategyWithSet(strategy, preemptionPolicy, setPolicy string) BatchFormation {
 	base := NewBatchFormation(preemptionPolicy).(*VLLMBatchFormation)
 	switch strategy {
 	case "", "vllm":
 		return base
 	case "ours":
 		return &OursBatchFormation{inner: base}
+	case "pooled":
+		return NewPooledBatchFormation(preemptionPolicy, setPolicy)
 	default:
 		panic(fmt.Sprintf("unknown batch formation %q", strategy))
 	}

@@ -47,6 +47,7 @@ type ProgressSnapshot struct {
 	GatewayExpired    int
 	// ShedByTier: per-SLO-class cumulative count of admission rejections + gateway queue shed + in-flight evictions + TTL expirations.
 	ShedByTier        map[string]int
+	SharedQueueDepth  int // ours: requests waiting in the shared queue (pooled control model), 0 in push mode
 	ActivePDTransfers int
 
 	// ActiveInstances counts instances in Active or WarmingUp state.

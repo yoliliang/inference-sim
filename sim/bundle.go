@@ -131,7 +131,7 @@ var (
 	validRoutingPolicies        = map[string]bool{"": true, "round-robin": true, "least-loaded": true, "weighted": true, "always-busiest": true}
 	validSchedulers             = map[string]bool{"": true, "fcfs": true, "priority-fcfs": true, "sjf": true, "reverse-priority": true, "type-rank": true}
 	validPreemptionPolicies     = map[string]bool{"": true, "fcfs": true, "priority": true, "srf": true} // srf: ours
-	validBatchFormations        = map[string]bool{"": true, "vllm": true, "ours": true}                  // ours
+	validBatchFormations        = map[string]bool{"": true, "vllm": true, "ours": true, "pooled": true}  // ours
 	validLatencyBackends        = map[string]bool{"": true, LatencyBackendRoofline: true, LatencyBackendTrainedPhysics: true}
 	validDisaggregationDeciders = map[string]bool{"": true, "never": true, "always": true, "prefix-threshold": true}
 	validEncodeDeciders         = map[string]bool{"": true, "never": true, "always": true, "multimodal": true}

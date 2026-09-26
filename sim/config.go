@@ -502,7 +502,8 @@ func (c ModelHardwareConfig) EffectiveExpertShardGroupSize() int {
 type PolicyConfig struct {
 	Scheduler        string // "fcfs" (default), "priority-fcfs", "sjf", "reverse-priority"
 	PreemptionPolicy string // "fcfs" (default) or "priority"
-	BatchFormation   string // ours: "vllm" (default, upstream behaviour) or "ours"
+	BatchFormation   string // ours: "vllm" (default, upstream behaviour), "ours", or "pooled" (shared-queue model)
+	SetPolicy        string // ours: set policy of the pooled batch formation ("" = fcfs-pool)
 }
 
 // PolicyOption is a functional option for NewPolicyConfig (ours).
@@ -512,6 +513,12 @@ type PolicyOption func(*PolicyConfig)
 func WithBatchFormation(name string) PolicyOption {
 	return func(c *PolicyConfig) { c.BatchFormation = name }
 }
+
+// WithSetPolicy selects the set policy of the pooled batch formation (ours).
+func WithSetPolicy(name string) PolicyOption {
+	return func(c *PolicyConfig) { c.SetPolicy = name }
+}
+
 
 // NewPolicyConfig creates a PolicyConfig with all fields explicitly set.
 // This is the canonical constructor — all construction sites must use it (R4).

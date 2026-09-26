@@ -51,6 +51,10 @@ type BatchContext struct {
 	// a per-step execution read of OutputTokens that INV-9 permits here, not a
 	// servability decision.
 	DecodeTokensPerStep func(req *Request) int64
+
+	// SharedQueue (ours) is the cluster's shared queue as seen by this instance; nil in the
+	// default push mode. Only PooledBatchFormation reads it.
+	SharedQueue SharedQueueAccess
 }
 
 // ScheduledRequest carries metadata about a newly scheduled request.
