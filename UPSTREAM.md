@@ -60,12 +60,18 @@ Branch: ours
 - sim/progress_hook.go (second item): +ClusterSnapshot.SharedQueueDepth
 - cmd/root.go (sixth item), cmd/state_sample.go (second item): +--shared-queue-push, --set-policy; cluster_shared_queue column
 
+- sim/metrics.go (fourth item): +Metrics.Lean; BuildOutput takes its samples from the lean accumulator when set
+- sim/window_stats.go: accumulator refactored into windowAcc (same arithmetic); lean path adds only the unfinished rows at the end
+- sim/simulator.go (sixth item): recordRequestCompletion folds the request into the lean accumulator and deletes its map entries
+- sim/cluster/deployment.go (fourth item), sim/cluster/cluster.go (sixth item), cmd/root.go (seventh item): LeanStats / window bounds plumbing (on whenever --drop-per-request-output is on)
+
 ## Files added (ours)
 
 - sim/scheduler_typerank.go
 - sim/batch_formation_srf_test.go
 - sim/admission_mooncake.go, sim/admission_mooncake_test.go
 - sim/shared_queue.go, sim/batch_formation_pooled.go, sim/batch_formation_pooled_test.go
+- sim/metrics_lean.go
 - sim/batch_formation_ours.go
 - cmd/state_sample.go (periodic per-instance state CSV via the existing read-only sim.ProgressHook)
 - ours/ (specs, run.ps1, run.sh, sweep.py grid driver with B0/B1/floor/oracle/harness profiles, analyze.py steady-state analysis and panel plots, objective.py revenue-management objective, report.py README.pdf generator via pdflatex, visualization-brief.md; results/ and experiments/ gitignored)

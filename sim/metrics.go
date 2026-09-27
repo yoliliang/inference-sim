@@ -57,6 +57,9 @@ type Metrics struct {
 	// ours: requests that never reached an instance (admission rejections) but
 	// should still appear in the file-only Requests[] array. Not aggregated anywhere else.
 	ExtraRequests []RequestMetrics
+	// Lean (ours): streaming per-request statistics; when set, completed requests are folded
+	// in at completion and removed from the maps above (see metrics_lean.go).
+	Lean *LeanStats
 	// ours: steady-state window configuration for the file-only window block. WindowEndS
 	// 0 = no block. DropPerRequest omits the per-request array from the file.
 	WindowStartS   float64
@@ -133,6 +136,9 @@ func (m *Metrics) BuildOutput(instanceID string) MetricsOutput {
 		for _, value := range m.RequestTTFTs {
 			sortedTTFTs = append(sortedTTFTs, value)
 		}
+		if m.Lean != nil { // ours: the samples live in the lean accumulator
+			sortedTTFTs = m.Lean.sortedTTFT(m.RequestTTFTs)
+		}
 		sort.Float64s(sortedTTFTs)
 		output.TTFTMeanMs = CalculateMean(sortedTTFTs)
 		output.TTFTP90Ms = CalculatePercentile(sortedTTFTs, 90)
@@ -143,6 +149,9 @@ func (m *Metrics) BuildOutput(instanceID string) MetricsOutput {
 		sortedE2Es := make([]float64, 0, len(m.RequestE2Es))
 		for _, value := range m.RequestE2Es {
 			sortedE2Es = append(sortedE2Es, value)
+		}
+		if m.Lean != nil { // ours
+			sortedE2Es = m.Lean.sortedE2E(m.RequestE2Es)
 		}
 		sort.Float64s(sortedE2Es)
 		output.E2EMeanMs = CalculateMean(sortedE2Es)
@@ -165,6 +174,9 @@ func (m *Metrics) BuildOutput(instanceID string) MetricsOutput {
 		sortedSchedulingDelays := make([]float64, 0, len(m.RequestSchedulingDelays))
 		for _, value := range m.RequestSchedulingDelays {
 			sortedSchedulingDelays = append(sortedSchedulingDelays, float64(value))
+		}
+		if m.Lean != nil { // ours
+			sortedSchedulingDelays = m.Lean.sortedDelay(m.RequestSchedulingDelays)
 		}
 		sort.Float64s(sortedSchedulingDelays)
 		output.SchedulingDelayP99Ms = CalculatePercentile(sortedSchedulingDelays, 99)

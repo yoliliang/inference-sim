@@ -101,3 +101,29 @@ difference figures, a manifest naming the folders and commits, and a README whos
 table is generated; the interpretation is written by hand. `python ours/report.py <folder>`
 produces its report.pdf. Several candidates go into one comparison folder as extra
 `--cand` arguments, so the paper's policy table comes from one place.
+
+## 8. Run time and memory (2026-09-26)
+
+Measured on the 8-core machine, one run at a time: one instance costs about 4 ms of wall
+time per simulated second (4.9 s for 1,200 s at 1.2 R_cap), and the cost is linear in the
+instance count (16 instances, 600 s: 34 s). Where the time goes: KV block bookkeeping (45
+percent, of which block-content hashing for the prefix cache 17 percent), garbage collection
+of short-lived objects (17 percent), allocation (12 percent), random token generation (5
+percent). These are BLIS's per-token, per-block fidelity and cannot be removed without
+changing the model; the prefix cache cannot be switched off because preempted requests hit
+their own cached blocks (4.8 percent hit rate). What decides campaign time is therefore the
+number of sample paths and the instance count, not the core speed.
+
+Levers, in order of value:
+
+1. Fewer seeds at large n: the seed-to-seed standard deviation falls like n^(-0.4), so
+   `--seeds-from-n 32:10` gives n = 32 and 64 ten seeds with bands narrower than n = 1 with
+   twenty. Halves the n = 64 level.
+2. Routine policy comparisons stop at n = 16; n = 32 and 64 are for final confirmation only
+   (per-unit-of-scale differences are flat in n, section 6).
+3. Lean statistics (`--drop-per-request-output`, on by default in sweep.py): completed
+   requests are folded into the window and aggregate accumulators at completion and their
+   per-request map entries deleted, so memory per run is about 30 percent lower (455 to 313
+   MB for 16 instances over 600 s), which allows 8 instead of 6 concurrent runs at n = 64.
+   It does not change the wall time of one run. Output is identical to the full path except
+   that the stdout per-tenant block is omitted.

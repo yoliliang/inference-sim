@@ -1,17 +1,14 @@
 package sim
 
-// ours: steady-state window statistics computed in memory at the end of a run, so the
-// per-request array does not have to be written to disk and re-read by the analysis.
-// The window is the set of requests that ARRIVED in [WindowStartS, WindowEndS). Latency
-// statistics use completed window requests; unfinished requests (still queued or running
-// at the horizon) are counted and their censored sojourn (horizon - arrival) summed;
+// ours: steady-state window statistics, computed in memory at the end of a run from the
+// per-request records (or streamed in lean mode, see metrics_lean.go). Requests are selected
+// by arrival time in [startS, endS). Per type (and "all"): counts by outcome and the sums that
+// are the sufficient statistics of the revenue management objective
+// pi_in * sum(P) + pi_out * sum(o) - h * sum(sojourn), so prices can be applied later;
 // admission rejections (Metrics.ExtraRequests with Status rejected) are counted.
-// The per-type sums are the sufficient statistics of the revenue management objective
-// pi_in * sum(P) + pi_out * sum(o) - h * sum(sojourn), so prices can be applied later.
 
 import "sort"
 
-// Quantiles summarises one latency in milliseconds over the completed window requests.
 type Quantiles struct {
 	Count  int     `json:"count"`
 	MeanMs float64 `json:"mean_ms"`
@@ -19,7 +16,6 @@ type Quantiles struct {
 	P99Ms  float64 `json:"p99_ms"`
 }
 
-// WindowTypeStats is the window record of one request type ("all" for every type).
 type WindowTypeStats struct {
 	Arrived         int       `json:"arrived"`
 	Completed       int       `json:"completed"`
@@ -36,7 +32,6 @@ type WindowTypeStats struct {
 	Wait            Quantiles `json:"wait"` // scheduling delay
 }
 
-// WindowStats is the file-only "window" block of MetricsOutput.
 type WindowStats struct {
 	StartS   float64                     `json:"start_s"`
 	EndS     float64                     `json:"end_s"`
@@ -65,58 +60,116 @@ func quantiles(v []float64) Quantiles {
 	return Quantiles{Count: len(v), MeanMs: sum / float64(len(v)), P50Ms: q(0.5), P99Ms: q(0.99)}
 }
 
+// windowAcc accumulates window statistics per type. The same accumulator serves the
+// end-of-run path (fed in sorted request-id order) and the lean streaming path (fed at
+// completion time).
+type windowAcc struct {
+	types    map[string]*WindowTypeStats
+	lat      map[string][3][]float64 // per type: ttft, e2e, wait samples in ms
+	horizonS float64                 // needed only for unfinished rows (censored time)
+}
+
+func newWindowAcc() *windowAcc {
+	return &windowAcc{types: map[string]*WindowTypeStats{"all": {}}, lat: map[string][3][]float64{}}
+}
+
+func (a *windowAcc) get(t string) *WindowTypeStats {
+	if _, ok := a.types[t]; !ok {
+		a.types[t] = &WindowTypeStats{}
+	}
+	return a.types[t]
+}
+
+func (a *windowAcc) add(rm RequestMetrics, ttft, e2e, wait float64, completed, rejected bool) {
+	for _, t := range []string{rm.TenantID, "all"} {
+		s := a.get(t)
+		s.Arrived++
+		s.SumPreemptions += int64(rm.PreemptionCount)
+		s.SumWastedTokens += rm.WastedTokens
+		switch {
+		case rejected:
+			s.Rejected++
+		case completed:
+			s.Completed++
+			s.SumInputTokens += int64(rm.NumPrefillTokens)
+			s.SumOutputTokens += int64(rm.NumDecodeTokens)
+			s.SumSojournS += e2e / 1000.0
+			l := a.lat[t]
+			l[0] = append(l[0], ttft)
+			l[1] = append(l[1], e2e)
+			l[2] = append(l[2], wait)
+			a.lat[t] = l
+		default:
+			s.Unfinished++
+			s.SumCensoredS += a.horizonS - rm.ArrivedAt
+		}
+	}
+}
+
+// merge adds another accumulator's counts, sums and samples (cluster aggregation of lean
+// per-instance accumulators). Types are visited in sorted order for determinism.
+func (a *windowAcc) merge(o *windowAcc) {
+	if o == nil {
+		return
+	}
+	keys := make([]string, 0, len(o.types))
+	for t := range o.types {
+		keys = append(keys, t)
+	}
+	sort.Strings(keys)
+	for _, t := range keys {
+		s, os := a.get(t), o.types[t]
+		s.Arrived += os.Arrived
+		s.Completed += os.Completed
+		s.Unfinished += os.Unfinished
+		s.Rejected += os.Rejected
+		s.SumInputTokens += os.SumInputTokens
+		s.SumOutputTokens += os.SumOutputTokens
+		s.SumSojournS += os.SumSojournS
+		s.SumCensoredS += os.SumCensoredS
+		s.SumPreemptions += os.SumPreemptions
+		s.SumWastedTokens += os.SumWastedTokens
+		l, ol := a.lat[t], o.lat[t]
+		for i := range l {
+			l[i] = append(l[i], ol[i]...)
+		}
+		a.lat[t] = l
+	}
+}
+
+func (a *windowAcc) finish(startS, endS float64) *WindowStats {
+	for t, s := range a.types {
+		l := a.lat[t]
+		s.TTFT, s.E2E, s.Wait = quantiles(l[0]), quantiles(l[1]), quantiles(l[2])
+	}
+	return &WindowStats{StartS: startS, EndS: endS, HorizonS: a.horizonS, Types: a.types}
+}
+
 // WindowStats computes the window block. horizonS is the run's end time in seconds.
+// In lean mode the completed window arrivals were streamed into Lean.win as they completed;
+// the requests still in Metrics.Requests are the unfinished ones. Otherwise every request is
+// read from the per-request maps in sorted id order (deterministic float sums).
 func (m *Metrics) WindowStats(startS, endS, horizonS float64) *WindowStats {
-	types := map[string]*WindowTypeStats{"all": {}}
-	lat := map[string][3][]float64{} // per type: ttft, e2e, wait samples in ms
-	get := func(t string) *WindowTypeStats {
-		if _, ok := types[t]; !ok {
-			types[t] = &WindowTypeStats{}
-		}
-		return types[t]
+	var acc *windowAcc
+	if m.Lean != nil {
+		acc = m.Lean.win
+	} else {
+		acc = newWindowAcc()
 	}
-	add := func(rm RequestMetrics, ttft, e2e, wait float64, completed, rejected bool) {
-		for _, t := range []string{rm.TenantID, "all"} {
-			s := get(t)
-			s.Arrived++
-			s.SumPreemptions += int64(rm.PreemptionCount)
-			s.SumWastedTokens += rm.WastedTokens
-			switch {
-			case rejected:
-				s.Rejected++
-			case completed:
-				s.Completed++
-				s.SumInputTokens += int64(rm.NumPrefillTokens)
-				s.SumOutputTokens += int64(rm.NumDecodeTokens)
-				s.SumSojournS += e2e / 1000.0
-				l := lat[t]
-				l[0] = append(l[0], ttft)
-				l[1] = append(l[1], e2e)
-				l[2] = append(l[2], wait)
-				lat[t] = l
-			default:
-				s.Unfinished++
-				s.SumCensoredS += horizonS - rm.ArrivedAt
-			}
-		}
-	}
+	acc.horizonS = horizonS
 	for _, id := range sortedRequestIDs(m.Requests) { // sorted: deterministic float sums
 		rm := m.Requests[id]
 		if rm.ArrivedAt < startS || rm.ArrivedAt >= endS {
 			continue
 		}
 		e2e, completed := m.RequestE2Es[id]
-		add(rm, m.RequestTTFTs[id]/1e3, e2e/1e3, float64(m.RequestSchedulingDelays[id])/1e3, completed, false)
+		acc.add(rm, m.RequestTTFTs[id]/1e3, e2e/1e3, float64(m.RequestSchedulingDelays[id])/1e3, completed, false)
 	}
 	for _, rm := range m.ExtraRequests {
 		if rm.ArrivedAt < startS || rm.ArrivedAt >= endS {
 			continue
 		}
-		add(rm, 0, 0, 0, false, rm.Status == "rejected")
+		acc.add(rm, 0, 0, 0, false, rm.Status == "rejected")
 	}
-	for t, s := range types {
-		l := lat[t]
-		s.TTFT, s.E2E, s.Wait = quantiles(l[0]), quantiles(l[1]), quantiles(l[2])
-	}
-	return &WindowStats{StartS: startS, EndS: endS, HorizonS: horizonS, Types: types}
+	return acc.finish(startS, endS)
 }

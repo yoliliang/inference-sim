@@ -679,6 +679,13 @@ func NewClusterSimulator(config DeploymentConfig, requestSource RequestSource, o
 			}
 		}
 	}
+	if config.LeanStats { // ours: streaming statistics, per-request maps hold only in-flight requests
+		for _, inst := range cs.instances {
+			if inst.sim != nil {
+				inst.sim.Metrics.Lean = sim.NewLeanStats(config.WindowStartS, config.WindowEndS)
+			}
+		}
+	}
 	if onRequestDone != nil || cs.tenantTracker != nil || cs.evictionTracker != nil {
 		for _, inst := range cs.instances {
 			inst.sim.OnRequestDone = func(req *sim.Request, tick int64) []*sim.Request {
@@ -1879,6 +1886,12 @@ func (c *ClusterSimulator) aggregateMetrics() *sim.Metrics {
 				logrus.Warnf("aggregateMetrics: duplicate request ID %q in Requests", k)
 			}
 			merged.Requests[k] = v
+		}
+		if m.Lean != nil { // ours: streaming statistics
+			if merged.Lean == nil {
+				merged.Lean = sim.NewLeanStats(m.Lean.WindowStartS, m.Lean.WindowEndS)
+			}
+			merged.Lean.Merge(m.Lean)
 		}
 		if m.ITLCounts != nil { // ours: compact ITL storage
 			if merged.ITLCounts == nil {

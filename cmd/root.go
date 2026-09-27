@@ -2569,6 +2569,9 @@ var runCmd = &cobra.Command{
 			TraceLevel:                      traceLevel,
 			CounterfactualK:                 counterfactualK,
 			ReleaseCompletedRequests:        releaseCompleted, // ours
+			LeanStats:                       dropPerRequestOutput, // ours: no per-request output wanted, so stream the statistics
+			WindowStartS:                    windowStartS,         // ours
+			WindowEndS:                      windowEndS,           // ours
 			SharedQueuePush:                 sharedQueuePush,  // ours
 			SharedQueueSetPolicy:            setPolicy,        // ours
 			SnapshotRefreshInterval:         snapshotRefreshInterval,

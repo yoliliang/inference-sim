@@ -43,6 +43,10 @@ import analyze  # noqa: E402
 
 BASE_FLAGS = [
     "--model", "qwen/qwen3-14b", "--hardware", "H100", "--tp", "1",
+    # default control structure since 2026-09-26: one shared queue, each instance takes from
+    # it at its step boundaries (notes/pooled-control-design.md); the push baselines below
+    # switch it off explicitly
+    "--shared-queue-push", "--set-policy", "fcfs-pool",
     # memory-lean execution, byte-identical results (fork features): requests are generated
     # and pulled as the clock advances, completed requests drop their token arrays, ITL
     # samples are kept as counts
@@ -52,7 +56,7 @@ BASE_FLAGS = [
 # Peak private memory per run is about 0.055 GB per instance at 1,200 s; keep the
 # concurrent runs of one grid point inside this budget.
 MEM_BUDGET_GB = 24.0
-MEM_GB_PER_INSTANCE = 0.055
+MEM_GB_PER_INSTANCE = 0.040
 
 # Configuration profiles (notes/benchmark-brief.md section 1). Each profile fixes the
 # gateway and engine controls; --blocks, rate, seed and horizon are set per run.
@@ -98,24 +102,24 @@ MOONCAKE_PARAMS = ["--mooncake-ttft-target", "2", "--mooncake-tbt-target", "60",
 #   B1_mooncake      B1 with Mooncake Early Rejection based on Prediction (Qin et al. 2026, 4.3.4)
 #   B1_mooncake_now  B1 with Mooncake Early Rejection on current loads (4.3.2), the paper's own contrast
 PROFILES = {
-    "B1": ["--routing-policy", "weighted", "--routing-scorers", LLMD_SCORERS,
+    "B1": ["--shared-queue-push=false", "--routing-policy", "weighted", "--routing-scorers", LLMD_SCORERS,
            "--snapshot-refresh-interval", "50000", *ENGINE_H100],
-    "B1_srf": ["--routing-policy", "weighted", "--routing-scorers", LLMD_SCORERS,
+    "B1_srf": ["--shared-queue-push=false", "--routing-policy", "weighted", "--routing-scorers", LLMD_SCORERS,
                "--snapshot-refresh-interval", "50000", *with_preemption(ENGINE_H100, "srf")],
-    "C": ["--shared-queue-push", "--set-policy", "fcfs-pool", *ENGINE_H100],
-    "B1_mooncake": ["--routing-policy", "weighted", "--routing-scorers", LLMD_SCORERS,
+    "C": [*ENGINE_H100],  # the default control structure with the B1 engine and prices
+    "B1_mooncake": ["--shared-queue-push=false", "--routing-policy", "weighted", "--routing-scorers", LLMD_SCORERS,
                     "--snapshot-refresh-interval", "50000",
                     *with_admission(ENGINE_H100, "mooncake", "--mooncake-mode", "predict", *MOONCAKE_PARAMS)],
-    "B1_mooncake_now": ["--routing-policy", "weighted", "--routing-scorers", LLMD_SCORERS,
+    "B1_mooncake_now": ["--shared-queue-push=false", "--routing-policy", "weighted", "--routing-scorers", LLMD_SCORERS,
                         "--snapshot-refresh-interval", "50000",
                         *with_admission(ENGINE_H100, "mooncake", "--mooncake-mode", "now", *MOONCAKE_PARAMS)],
-    "B0": ["--routing-policy", "weighted", "--routing-scorers", "vllm-dp:1",
+    "B0": ["--shared-queue-push=false", "--routing-policy", "weighted", "--routing-scorers", "vllm-dp:1",
            "--snapshot-refresh-interval", "0", *ENGINE_H100],
-    "floor": ["--routing-policy", "round-robin",
+    "floor": ["--shared-queue-push=false", "--routing-policy", "round-robin",
               "--snapshot-refresh-interval", "50000", *ENGINE_H100],
-    "oracle": ["--routing-policy", "weighted", "--routing-scorers", LLMD_SCORERS,
+    "oracle": ["--shared-queue-push=false", "--routing-policy", "weighted", "--routing-scorers", LLMD_SCORERS,
                "--snapshot-refresh-interval", "0", *ENGINE_H100],
-    "harness": ["--routing-policy", "weighted",
+    "harness": ["--shared-queue-push=false", "--routing-policy", "weighted",
                 "--routing-scorers", "queue-depth:1,kv-utilization:1",
                 "--snapshot-refresh-interval", "0"],
 }

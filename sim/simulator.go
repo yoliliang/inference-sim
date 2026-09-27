@@ -856,6 +856,7 @@ func (sim *Simulator) recordRequestCompletion(req *Request) {
 	sim.Metrics.RequestStepCounters = append(sim.Metrics.RequestStepCounters, req.FinishedStepIdx-req.ScheduledStepIdx)
 	sim.Metrics.RequestCompletionTimes[req.ID] = float64(lat + req.ArrivalTime)
 	sim.Metrics.AddITLs(req.ITL) // ours: counts when compact ITL storage is on
+	sim.Metrics.foldCompleted(req.ID) // ours: lean mode streams the request out of the maps
 	// Terminal state: reset the spec-decode carry so no stale fraction survives if
 	// this Request struct is ever reused (#1528). No-op when the feature is off.
 	req.specDecodeCarry = 0

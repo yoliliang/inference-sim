@@ -31,6 +31,9 @@ type DeploymentConfig struct {
 	TraceLevel      string // "none" (default), "decisions"
 	CounterfactualK int    // number of counterfactual candidates, default 0
 	ReleaseCompletedRequests bool // ours: drop token and ITL slices of completed requests (memory), see Simulator.ReleaseCompleted
+	LeanStats                bool    // ours: stream per-request statistics at completion instead of keeping per-request maps (metrics_lean.go)
+	WindowStartS             float64 // ours: steady-state window bounds for the lean accumulators, seconds by arrival
+	WindowEndS               float64
 
 	// Snapshot staleness configuration (H3 experiment, unified in #463)
 	// When > 0, all Prometheus-sourced signals (QueueDepth, BatchSize, KVUtilization)
