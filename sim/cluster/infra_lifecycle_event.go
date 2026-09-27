@@ -74,6 +74,7 @@ func (e *NodeReadyEvent) Execute(cs *ClusterSimulator) {
 		// Issue #1522: recompute KV capacity from the placed GPU memory in the deferred
 		// path too (mirrors the startup path). No-op when KVAutoCalc.Enabled is false.
 		applyPerInstanceKVCapacity(&p.simCfg, poolGPUMemoryGiB, cs.config.KVAutoCalc, p.gpuType)
+		applyPoolKVBlocks(&p.simCfg, cs.config.NodePools, p.gpuType) // ours
 		// Issue #1530: stamp the placement-derived interconnect topology (mirrors the
 		// startup path) so a deferred instance prices cross-node comm identically.
 		cs.applyPlacementTopology(&p.simCfg, p.gpuIDs)

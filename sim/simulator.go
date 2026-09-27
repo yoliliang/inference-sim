@@ -115,6 +115,7 @@ type Simulator struct {
 	longPrefillTokenThreshold int64
 	stepEvent                 Event
 	sharedQueue               SharedQueueAccess // ours: nil in push mode
+	instanceID                string            // ours: set by the cluster (InstanceInfo.ID)
 	emptyStepAt               int64             // ours: clock of the last step that formed an empty batch (-1 = never)
 	stepCount                 int
 	// map of request IDs to total num computed tokens (including cached tokens)
@@ -490,6 +491,31 @@ func (sim *Simulator) RunningPrefillTokens() int64 {
 // need a latency estimate (Mooncake admission). Read-only; the batch passed in is synthetic.
 func (sim *Simulator) StepTimeFn() func(batch []*Request) int64 {
 	return sim.latencyModel.StepTime
+}
+
+// SetInstanceID (ours) records the cluster-level instance id for InstanceInfo.
+func (sim *Simulator) SetInstanceID(id string) { sim.instanceID = id }
+
+// CanServe (ours) reports whether this instance could ever serve r: the servability guards
+// of EnqueueRequest and AdoptSharedRequest, without side effects.
+func (sim *Simulator) CanServe(r *Request) bool {
+	maxOut := r.MaxOutputLen
+	if maxOut == 0 && sim.maxModelLen > 0 && r.InputLen() < sim.maxModelLen {
+		maxOut = int(sim.maxModelLen) - int(r.InputLen())
+	}
+	if maxOut < 0 {
+		return false
+	}
+	if sim.maxModelLen > 0 {
+		if r.InputLen() >= sim.maxModelLen {
+			return false
+		}
+		if maxOut > 0 && r.InputLen()+int64(maxOut) > sim.maxModelLen {
+			return false
+		}
+	}
+	bs := sim.KVCache.BlockSize()
+	return (r.InputLen()+bs-1)/bs <= sim.KVCache.TotalCapacity()
 }
 
 // ResidentAdapterIDs returns the ids of LoRA adapters currently resident on this
@@ -922,6 +948,9 @@ func (sim *Simulator) scheduleBatch(now int64) {
 		StepCount:             sim.stepCount,
 		ComputedTokens:        sim.reqNumComputedTokens,
 		SharedQueue:           sim.sharedQueue, // ours
+	}
+	if sim.sharedQueue != nil { // ours: identity for set policies
+		batchCtx.Instance = InstanceInfo{ID: sim.instanceID, GPU: sim.gpu, TotalKVBlocks: sim.KVCache.TotalCapacity(), StepTime: sim.latencyModel.StepTime}
 	}
 	if sim.residentAdapters != nil {
 		batchCtx.AdapterResident = sim.residentAdapters.IsResident

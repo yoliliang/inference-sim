@@ -116,6 +116,9 @@ func (p *PooledBatchFormation) FormBatch(ctx BatchContext) BatchResult {
 		if fromShared && ctx.SharedQueue == nil {
 			panic(fmt.Sprintf("set policy returned %s, which is neither local nor in the shared queue", next.ID))
 		}
+		if fromShared && !ctx.SharedQueue.Fits(next) {
+			continue // never fits this instance (context limit or capacity): leave it for another
+		}
 
 		// Physical limits, as in vLLM Phase 2.
 		cachedBlocks := ctx.KVCache.GetCachedBlocks(next.FullInputTokens())

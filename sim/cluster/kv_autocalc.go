@@ -144,3 +144,24 @@ func applyPerInstanceKVCapacity(simCfg *sim.SimConfig, gpuMemoryGiB float64, cfg
 		"(GPU=%.0f GiB, TP=%d, DP=%d, EP-group DP=%d, EP=%d)", gpuType, blocks, gpuMemoryGiB,
 		simCfg.TP, simCfg.EffectiveDP(), epGroupDP, simCfg.EffectiveEP())
 }
+
+// applyPoolKVBlocks (ours) gives an instance the explicit KV block count of its pool
+// (node_pools[].kv_blocks), overriding both the global --total-kv-blocks and the
+// per-instance auto-calc. 0 leaves the capacity as it is. MaxModelLen is capped to what the
+// blocks can hold, as the auto-calc does.
+func applyPoolKVBlocks(simCfg *sim.SimConfig, pools []NodePoolConfig, gpuType string) {
+	for i := range pools {
+		if pools[i].GPUType != gpuType || pools[i].KVBlocks <= 0 {
+			continue
+		}
+		simCfg.TotalKVBlocks = pools[i].KVBlocks
+		if simCfg.MaxModelLen > 0 {
+			if feasible := pools[i].KVBlocks * simCfg.BlockSizeTokens; feasible < simCfg.MaxModelLen {
+				logrus.Infof("[cluster] pool %q: max-model-len capped to %d by kv_blocks=%d", pools[i].Name, feasible, pools[i].KVBlocks)
+				simCfg.MaxModelLen = feasible
+			}
+		}
+		logrus.Infof("[cluster] pool %q (GPU %q): explicit total-kv-blocks=%d", pools[i].Name, gpuType, pools[i].KVBlocks)
+		return
+	}
+}

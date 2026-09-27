@@ -55,6 +55,19 @@ type BatchContext struct {
 	// SharedQueue (ours) is the cluster's shared queue as seen by this instance; nil in the
 	// default push mode. Only PooledBatchFormation reads it.
 	SharedQueue SharedQueueAccess
+
+	// Instance (ours) identifies the instance making this set decision, for set policies
+	// that discriminate by hardware (heterogeneous clusters). Filled only in shared-queue
+	// mode; FCFSPool ignores it.
+	Instance InstanceInfo
+}
+
+// InstanceInfo (ours) is what a set policy may know about the deciding instance.
+type InstanceInfo struct {
+	ID            string
+	GPU           string
+	TotalKVBlocks int64
+	StepTime      func(batch []*Request) int64 // this instance's step-time model
 }
 
 // ScheduledRequest carries metadata about a newly scheduled request.

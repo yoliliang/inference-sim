@@ -11,6 +11,7 @@ type fakeShared struct {
 }
 
 func (f *fakeShared) Candidates() []*Request { return f.items }
+func (f *fakeShared) Fits(r *Request) bool   { return !f.refuse[r.ID] }
 func (f *fakeShared) Len() int               { return len(f.items) }
 func (f *fakeShared) Take(r *Request) bool {
 	for i, x := range f.items {

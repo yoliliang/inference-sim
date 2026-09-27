@@ -65,6 +65,13 @@ Branch: ours
 - sim/simulator.go (sixth item): recordRequestCompletion folds the request into the lean accumulator and deletes its map entries
 - sim/cluster/deployment.go (fourth item), sim/cluster/cluster.go (sixth item), cmd/root.go (seventh item): LeanStats / window bounds plumbing (on whenever --drop-per-request-output is on)
 
+- sim/bundle.go, sim/cluster/infra_config.go: node_pools[].kv_blocks (explicit per-pool KV blocks)
+- cmd/root.go (eighth item): per-pool hardware calibration fills DeploymentConfig.HWConfigByGPU (upstream never sets it, issue #893); --wake-rule; kv_blocks copied into NodePoolConfig
+- sim/cluster/kv_autocalc.go: applyPoolKVBlocks; sim/cluster/cluster.go, infra_lifecycle_event.go, direct_actuator.go call it after the auto-calc at the three placement sites
+- sim/cluster/cluster_event.go (second item): shared-queue arrivals no instance can serve are dropped at arrival (DroppedUnservable); wake rules fastest-first / lowest-index / round-robin; sharedQueueAccess.Fits
+- sim/cluster/deployment.go (fifth item): SharedQueueWakeRule; sim/cluster/instance.go: CanServe, SetInstanceID
+- sim/shared_queue.go: SharedQueueAccess.Fits, ReferenceStepTime; sim/batch_formation.go: BatchContext.Instance (InstanceInfo); sim/batch_formation_pooled.go: skips candidates that never fit the instance; sim/simulator.go (seventh item): CanServe, instanceID, BatchContext.Instance
+
 ## Files added (ours)
 
 - sim/scheduler_typerank.go

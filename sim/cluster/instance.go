@@ -74,6 +74,7 @@ func NewInstanceSimulator(id InstanceID, cfg sim.SimConfig) *InstanceSimulator {
 	if err != nil {
 		panic(fmt.Sprintf("NewInstanceSimulator(%s): %v", id, err))
 	}
+	s.SetInstanceID(string(id)) // ours: identity for set policies
 	return &InstanceSimulator{
 		id:         id,
 		sim:        s,
@@ -178,6 +179,7 @@ func (i *InstanceSimulator) SetSharedQueue(a sim.SharedQueueAccess)     { i.sim.
 func (i *InstanceSimulator) IsIdle() bool                                { return i.sim.IsIdle() }
 func (i *InstanceSimulator) WakeStep(now int64) bool                     { return i.sim.WakeStep(now) }
 func (i *InstanceSimulator) AdoptSharedRequest(r *sim.Request) bool      { return i.sim.AdoptSharedRequest(r) }
+func (i *InstanceSimulator) CanServe(r *sim.Request) bool                { return i.sim.CanServe(r) }
 func (i *InstanceSimulator) QueueingTimeFn() func(*sim.Request) int64    { return i.sim.QueueingTimeFn() }
 
 // BatchSize returns the number of requests in the running batch, or 0 if nil.

@@ -71,6 +71,7 @@ type NodePoolBundleConfig struct {
 	MaxNodes          int             `yaml:"max_nodes"`
 	ProvisioningDelay DelayBundleSpec `yaml:"provisioning_delay"`
 	CostPerHour       float64         `yaml:"cost_per_hour"`
+	KVBlocks          int64           `yaml:"kv_blocks"` // ours: explicit KV blocks per instance placed in this pool (0 = auto or global)
 }
 
 // DelayBundleSpec mirrors cluster.DelaySpec for YAML loading. Mean and Stddev in seconds.
@@ -373,6 +374,9 @@ func (b *PolicyBundle) Validate() error {
 		}
 		if np.CostPerHour < 0 {
 			return fmt.Errorf("node_pools[%d] %q: cost_per_hour must be >= 0, got %v", i, np.Name, np.CostPerHour)
+		}
+		if np.KVBlocks < 0 { // ours
+			return fmt.Errorf("node_pools[%d] %q: kv_blocks must be >= 0, got %d", i, np.Name, np.KVBlocks)
 		}
 	}
 	// Validate instance lifecycle config.

@@ -41,4 +41,26 @@ type SharedQueueAccess interface {
 	Candidates() []*Request
 	Take(r *Request) bool
 	Len() int
+	// Fits reports whether the calling instance could ever serve r (context limit, KV
+	// capacity). A candidate that does not fit is skipped, not taken, so that another
+	// instance can take it.
+	Fits(r *Request) bool
+}
+
+// ReferenceStepTime (ours) evaluates a step-time function on a fixed reference batch (one
+// prefill chunk of 512 tokens plus eight decode requests at 1,024 tokens of context) so
+// that instances of different hardware can be ordered by speed. Used by the fastest-first
+// wake rule; equal for identical instances.
+func ReferenceStepTime(stepTime func(batch []*Request) int64) int64 {
+	if stepTime == nil {
+		return 0
+	}
+	tokens := make([]TokenID, 1024)
+	batch := make([]*Request, 0, 9)
+	batch = append(batch, &Request{ID: "ref-prefill", State: StateRunning, InputTokens: tokens[:512], NumNewTokens: 512})
+	for i := 0; i < 8; i++ {
+		batch = append(batch, &Request{ID: "ref-decode", State: StateRunning, InputTokens: tokens,
+			OutputTokens: tokens[:1], ProgressIndex: 1024, NumNewTokens: 1}) // OutputTokens set: the latency models classify decode by it
+	}
+	return stepTime(batch)
 }

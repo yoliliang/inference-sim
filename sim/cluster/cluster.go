@@ -55,6 +55,10 @@ type ClusterSimulator struct {
 	rejectedRequests  int            // EC-2: count of requests rejected by admission policy
 	rejectedRequestMetrics []sim.RequestMetrics // ours: one row per admission rejection, for the file-only Requests[] array
 	sharedQueue            *sim.SharedQueue     // ours: the pooled control model's shared queue (nil in push mode)
+	sharedQueueDropped     int                  // ours: arrivals no instance could ever serve (INV-1: DroppedUnservable)
+	wakeRule               string               // ours: see wakeIdleInstance
+	wakeOrder              []*InstanceSimulator // ours: instances in wake preference order (fastest-first, lowest-index)
+	wakeCursor             int                  // ours: round-robin position
 	sharedQueueMetrics     []sim.RequestMetrics // ours: rows for requests still in the shared queue at the horizon
 	progressRequestDetail  bool                 // ours: fill InstanceSnapshot.Requests in progress snapshots
 	routingRejections int            // I13: count of requests rejected at routing (no routable instances)
@@ -428,6 +432,7 @@ func NewClusterSimulator(config DeploymentConfig, requestSource RequestSource, o
 			// override above, giving the placed GPU authority over KV capacity too.
 			// No-op when KVAutoCalc.Enabled is false (INV-6).
 			applyPerInstanceKVCapacity(&simCfg, poolGPUMemoryGiB, config.KVAutoCalc, matchedGPUType)
+			applyPoolKVBlocks(&simCfg, config.NodePools, matchedGPUType) // ours: explicit per-pool blocks win
 			// Issue #1530: stamp the placement-derived interconnect topology (the size
 			// of the node(s) this instance actually landed on) so the latency model can
 			// price cross-node collective traffic. Inert when unresolvable.
@@ -498,6 +503,8 @@ func NewClusterSimulator(config DeploymentConfig, requestSource RequestSource, o
 		for _, inst := range cs.instances {
 			inst.SetSharedQueue(&sharedQueueAccess{cs: cs, inst: inst})
 		}
+		cs.wakeRule = config.SharedQueueWakeRule
+		cs.buildWakeOrder()
 	}
 
 	// ours: the Mooncake admission rule estimates TTFT and TBT with the instances' own
@@ -1054,6 +1061,7 @@ func (c *ClusterSimulator) Run() error {
 	if c.droppedAtDecodeKV > 0 {
 		c.aggregatedMetrics.DroppedUnservable += c.droppedAtDecodeKV
 	}
+	c.aggregatedMetrics.DroppedUnservable += c.sharedQueueDropped // ours: dropped at shared-queue arrival
 	// In-flight PD transfers: requests whose prefill completed but decode hasn't
 	// finished or been dropped yet (e.g., simulation ended at bounded horizon while
 	// KV transfer was in progress). These requests were subtracted from CompletedRequests

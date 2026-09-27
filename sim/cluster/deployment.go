@@ -121,6 +121,7 @@ type DeploymentConfig struct {
 	// takes from it at its step boundaries; routing as a separate decision does not exist.
 	SharedQueuePush bool
 	SharedQueueSetPolicy string // set policy name for the pooled batch formation (the SimConfig.SetPolicy field carries it into the instances)
+	SharedQueueWakeRule string // ours: fastest-first (default), lowest-index or round-robin; see ClusterSimulator.wakeIdleInstance
 
 	// ours: Mooncake admission parameters. Only used when AdmissionPolicy = "mooncake".
 	MooncakeMode            string  // "now" (Early Rejection) or "predict" (Early Rejection based on Prediction)

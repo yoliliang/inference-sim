@@ -3,6 +3,7 @@ package cluster
 import (
 	"container/heap"
 	"fmt"
+	"sort"
 
 	"github.com/sirupsen/logrus"
 
@@ -123,7 +124,7 @@ type ClusterArrivalEvent struct {
 }
 
 func (e *ClusterArrivalEvent) Timestamp() int64 { return e.time }
-func (e *ClusterArrivalEvent) Priority() int     { return 0 }
+func (e *ClusterArrivalEvent) Priority() int    { return 0 }
 
 // Execute schedules an AdmissionDecisionEvent with the configured admission latency.
 // Records the request as injected on its SLO class BEFORE any admission/routing
@@ -153,7 +154,7 @@ type AdmissionDecisionEvent struct {
 }
 
 func (e *AdmissionDecisionEvent) Timestamp() int64 { return e.time }
-func (e *AdmissionDecisionEvent) Priority() int     { return 1 }
+func (e *AdmissionDecisionEvent) Priority() int    { return 1 }
 
 // Execute processes the admission decision for an incoming request.
 // Checks admission policy with full RouterState (BC-8: includes snapshots).
@@ -276,18 +277,84 @@ type SharedQueueArrivalEvent struct {
 }
 
 func (e *SharedQueueArrivalEvent) Timestamp() int64 { return e.time }
-func (e *SharedQueueArrivalEvent) Priority() int     { return 2 }
+func (e *SharedQueueArrivalEvent) Priority() int    { return 2 }
 
 func (e *SharedQueueArrivalEvent) Execute(cs *ClusterSimulator) {
+	if !cs.anyInstanceCanServe(e.request) { // servability is checked here, once, against every instance
+		logrus.Warnf("dropping request %s: no instance can serve it (prompt %d tokens)", e.request.ID, e.request.InputLen())
+		cs.sharedQueueDropped++
+		return
+	}
 	cs.sharedQueue.Push(e.request)
 	cs.wakeIdleInstance()
 }
 
-// wakeIdleInstance (ours) offers a step now to the lowest-index idle routable instance.
-// Busy instances see the shared queue at their next step boundary.
-func (cs *ClusterSimulator) wakeIdleInstance() {
+// anyInstanceCanServe (ours) reports whether some instance could serve r at all (context
+// limit, KV capacity). A request that fits nowhere is dropped at arrival instead of
+// sitting at the head of the shared queue.
+func (cs *ClusterSimulator) anyInstanceCanServe(r *sim.Request) bool {
 	for _, inst := range cs.instances {
+		if inst.HasSim() && inst.CanServe(r) {
+			return true
+		}
+	}
+	return false
+}
+
+// Wake rules (ours): which idle instance is offered a step when the shared queue gains a
+// request or an instance frees capacity. Busy instances see the shared queue at their next
+// step boundary regardless. With identical instances every rule except round-robin
+// reduces to lowest-index.
+const (
+	WakeFastestFirst = "fastest-first" // shortest reference step time first, index order among equals
+	WakeLowestIndex  = "lowest-index"
+	WakeRoundRobin   = "round-robin"
+)
+
+var validWakeRules = map[string]bool{"": true, WakeFastestFirst: true, WakeLowestIndex: true, WakeRoundRobin: true}
+
+// IsValidWakeRule reports whether name is a registered wake rule ("" = fastest-first).
+func IsValidWakeRule(name string) bool { return validWakeRules[name] }
+
+// WakeRuleNames lists the registered wake rules.
+func WakeRuleNames() []string { return []string{WakeFastestFirst, WakeLowestIndex, WakeRoundRobin} }
+
+// buildWakeOrder (ours) fixes the preference order of the startup instances.
+func (cs *ClusterSimulator) buildWakeOrder() {
+	cs.wakeOrder = cs.wakeOrder[:0]
+	for _, inst := range cs.instances {
+		if inst.HasSim() {
+			cs.wakeOrder = append(cs.wakeOrder, inst)
+		}
+	}
+	if cs.wakeRule == "" || cs.wakeRule == WakeFastestFirst {
+		ref := make(map[*InstanceSimulator]int64, len(cs.wakeOrder))
+		for _, inst := range cs.wakeOrder {
+			ref[inst] = sim.ReferenceStepTime(inst.StepTimeFn())
+		}
+		sort.SliceStable(cs.wakeOrder, func(i, j int) bool { return ref[cs.wakeOrder[i]] < ref[cs.wakeOrder[j]] })
+	}
+}
+
+// wakeIdleInstance (ours) offers a step now to one idle routable instance chosen by the
+// wake rule. One is enough: no instance is idle while the shared queue is non-empty
+// except at a clock where it just found the queue empty.
+func (cs *ClusterSimulator) wakeIdleInstance() {
+	order := cs.wakeOrder
+	if len(order) == 0 {
+		order = cs.instances
+	}
+	n := len(order)
+	start := 0
+	if cs.wakeRule == WakeRoundRobin {
+		start = cs.wakeCursor % n
+	}
+	for k := 0; k < n; k++ {
+		inst := order[(start+k)%n]
 		if inst.IsRoutable() && inst.HasSim() && inst.IsIdle() && inst.WakeStep(cs.clock) {
+			if cs.wakeRule == WakeRoundRobin {
+				cs.wakeCursor = (start + k + 1) % n
+			}
 			return
 		}
 	}
@@ -301,6 +368,7 @@ type sharedQueueAccess struct {
 
 func (a *sharedQueueAccess) Candidates() []*sim.Request { return a.cs.sharedQueue.Items() }
 func (a *sharedQueueAccess) Len() int                   { return a.cs.sharedQueue.Len() }
+func (a *sharedQueueAccess) Fits(r *sim.Request) bool   { return a.inst.CanServe(r) }
 
 // Take moves r from the shared queue to this instance: in-flight accounting first (a drop
 // inside AdoptSharedRequest is decremented by the cluster loop's completion delta), then
@@ -323,7 +391,7 @@ type RoutingDecisionEvent struct {
 }
 
 func (e *RoutingDecisionEvent) Timestamp() int64 { return e.time }
-func (e *RoutingDecisionEvent) Priority() int     { return 2 }
+func (e *RoutingDecisionEvent) Priority() int    { return 2 }
 
 // Execute routes the request using the configured routing policy and injects it.
 // Dispatches to executeDisaggregatedRouting when pool topology is configured (PD
@@ -349,7 +417,7 @@ type GatewayEvictionEvent struct {
 }
 
 func (e *GatewayEvictionEvent) Timestamp() int64 { return e.time }
-func (e *GatewayEvictionEvent) Priority() int     { return 5 }
+func (e *GatewayEvictionEvent) Priority() int    { return 5 }
 
 func (e *GatewayEvictionEvent) Execute(cs *ClusterSimulator) {
 	logrus.Debugf("[cluster] gateway eviction: req %s evicted from instance %s at tick %d",
@@ -394,7 +462,7 @@ type GatewayQueueTTLEvent struct {
 }
 
 func (e *GatewayQueueTTLEvent) Timestamp() int64 { return e.time }
-func (e *GatewayQueueTTLEvent) Priority() int     { return 6 }
+func (e *GatewayQueueTTLEvent) Priority() int    { return 6 }
 
 func (e *GatewayQueueTTLEvent) Execute(cs *ClusterSimulator) {
 	req := cs.gatewayQueue.RemoveByRequestID(e.requestID)
@@ -421,7 +489,7 @@ type GatewayDispatchTickEvent struct {
 }
 
 func (e *GatewayDispatchTickEvent) Timestamp() int64 { return e.At }
-func (e *GatewayDispatchTickEvent) Priority() int     { return 7 }
+func (e *GatewayDispatchTickEvent) Priority() int    { return 7 }
 
 func (e *GatewayDispatchTickEvent) Execute(cs *ClusterSimulator) {
 	if cs.gatewayQueue == nil {
@@ -453,7 +521,7 @@ type DisaggregationDecisionEvent struct {
 }
 
 func (e *DisaggregationDecisionEvent) Timestamp() int64 { return e.time }
-func (e *DisaggregationDecisionEvent) Priority() int     { return 3 }
+func (e *DisaggregationDecisionEvent) Priority() int    { return 3 }
 
 // Execute implements the llm-d decode-first routing order:
 // 1. Select a decode pod first (via decode pool routing).
@@ -593,7 +661,7 @@ type ScalingTickEvent struct {
 }
 
 func (e *ScalingTickEvent) Timestamp() int64 { return e.At }
-func (e *ScalingTickEvent) Priority() int     { return 8 }
+func (e *ScalingTickEvent) Priority() int    { return 8 }
 
 // Execute runs the autoscaling pipeline: Collect → Analyze → Optimize → stabilization window gate
 // → schedule ScaleActuationEvent → schedule next ScalingTickEvent.
@@ -615,7 +683,7 @@ type ScaleActuationEvent struct {
 }
 
 func (e *ScaleActuationEvent) Timestamp() int64 { return e.At }
-func (e *ScaleActuationEvent) Priority() int     { return 9 }
+func (e *ScaleActuationEvent) Priority() int    { return 9 }
 
 // Execute calls Actuator.Apply(decisions).
 // Full actuator logic is wired in US3 (T019–T023).

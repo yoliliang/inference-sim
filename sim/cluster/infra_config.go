@@ -61,6 +61,7 @@ type NodePoolConfig struct {
 	MaxNodes          int       `yaml:"max_nodes"`
 	ProvisioningDelay DelaySpec `yaml:"provisioning_delay"`
 	CostPerHour       float64   `yaml:"cost_per_hour"` // $/hr per node; used for CostPerReplica in VariantCapacity; 0 = free tier
+	KVBlocks          int64     `yaml:"kv_blocks"`     // ours: explicit KV blocks per instance placed in this pool (0 = auto-calc or global)
 }
 
 // IsValid validates all fields in the NodePoolConfig.

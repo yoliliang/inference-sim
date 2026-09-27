@@ -104,6 +104,7 @@ var (
 	tierShedThreshold       int                // Tier-shed overload threshold (0 = any load)
 	sharedQueuePush         bool               // ours: pooled control model (one shared queue, set decision per step)
 	setPolicy               string             // ours: set policy of the pooled batch formation
+	wakeRule                string             // ours: which idle instance a shared-queue arrival or completion wakes
 	mooncakeMode            string             // ours: Mooncake admission mode (now | predict)
 	mooncakeTTFTTargetS     float64            // ours
 	mooncakeTBTTargetMs     float64            // ours
@@ -1291,6 +1292,9 @@ func resolvePolicies(cmd *cobra.Command) ([]sim.ScorerConfig, *sim.PolicyBundle)
 		if !sim.IsValidSetPolicy(setPolicy) {
 			logrus.Fatalf("unknown --set-policy %q", setPolicy)
 		}
+		if !cluster.IsValidWakeRule(wakeRule) {
+			logrus.Fatalf("unknown --wake-rule %q (valid: %s)", wakeRule, strings.Join(cluster.WakeRuleNames(), ", "))
+		}
 		if flowControlEnabled {
 			logrus.Fatalf("--shared-queue-push cannot be combined with --flow-control (the shared queue replaces the gateway queue)")
 		}
@@ -1543,6 +1547,7 @@ func registerSimConfigFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&preemptionPolicy, "preemption-policy", "fcfs", "Preemption victim selection: fcfs (tail-of-batch), priority (least-urgent SLO tier), srf (fewest KV entries held, Kim et al. 2024)")
 	cmd.Flags().StringVar(&batchFormation, "batch-formation", "vllm", "ours: batch-formation strategy: vllm (upstream default), ours (custom FormBatch in sim/batch_formation_ours.go), pooled (set by --shared-queue-push)")
 	cmd.Flags().BoolVar(&sharedQueuePush, "shared-queue-push", false, "ours: pooled control model: admitted requests wait in one cluster-level shared queue and every instance takes from it at its step boundaries (no routing decision); selects batch formation pooled")
+	cmd.Flags().StringVar(&wakeRule, "wake-rule", "fastest-first", "ours: with --shared-queue-push, which idle instance is offered a step when the shared queue gains a request or capacity is freed: fastest-first (shortest reference step time, index order among equals), lowest-index, round-robin")
 	cmd.Flags().StringVar(&setPolicy, "set-policy", "fcfs-pool", "ours: set policy of the pooled batch formation: fcfs-pool (own preempted requests first, then the shared queue in arrival order, stop at the first that does not fit)")
 
 	// Policy bundle config
@@ -2292,6 +2297,7 @@ var runCmd = &cobra.Command{
 			bundleAnalyzerCfg                    cluster.V2SaturationAnalyzerConfig
 			bundleNodePools                      []cluster.NodePoolConfig
 			bundleInstanceLifecycle              cluster.InstanceLifecycleConfig
+			bundleHWByGPU                        map[string]sim.HardwareCalib // ours: per-pool hardware calibration
 		)
 		if bundle != nil {
 			if bundle.Autoscaler.IntervalUs > 0 {
@@ -2321,7 +2327,21 @@ var runCmd = &cobra.Command{
 						Stddev: np.ProvisioningDelay.Stddev,
 					},
 					CostPerHour: np.CostPerHour,
+					KVBlocks:    np.KVBlocks, // ours
 				})
+			}
+			// ours: a node pool's instances step with THEIR GPU's calibration. Upstream leaves
+			// DeploymentConfig.HWConfigByGPU empty (issue #893), so a mixed fleet would share
+			// the --hardware calibration and differ only in capacity and cost.
+			if len(bundleNodePools) > 0 && (lr.Backend == "roofline" || lr.Backend == "trained-physics") {
+				bundleHWByGPU = make(map[string]sim.HardwareCalib, len(bundleNodePools))
+				for _, np := range bundleNodePools {
+					hc, hcErr := latency.GetHWConfig(hwConfigPath, np.GPUType)
+					if hcErr != nil {
+						logrus.Fatalf("node pool %q: no hardware calibration for gpu_type %q: %v", np.Name, np.GPUType, hcErr)
+					}
+					bundleHWByGPU[np.GPUType] = hc
+				}
 			}
 			bundleInstanceLifecycle = cluster.InstanceLifecycleConfig{
 				LoadingDelay: cluster.DelaySpec{
@@ -2574,6 +2594,7 @@ var runCmd = &cobra.Command{
 			WindowEndS:                      windowEndS,           // ours
 			SharedQueuePush:                 sharedQueuePush,  // ours
 			SharedQueueSetPolicy:            setPolicy,        // ours
+			SharedQueueWakeRule:             wakeRule,         // ours
 			SnapshotRefreshInterval:         snapshotRefreshInterval,
 			CacheSignalDelay:                cacheSignalDelay,
 			PrefillInstances:                prefillInstances,
@@ -2621,6 +2642,7 @@ var runCmd = &cobra.Command{
 			HPAScrapeDelay:                  cluster.DelaySpec{Mean: bundleHPAScrapeDelayMean, Stddev: bundleHPAScrapeDelayStddev},
 			AutoscalerAnalyzerConfig:        bundleAnalyzerCfg,
 			NodePools:                       bundleNodePools,
+			HWConfigByGPU:                   bundleHWByGPU, // ours
 			InstanceLifecycle:               bundleInstanceLifecycle,
 			// Issue #1522: enable per-instance KV auto-calc for node-pool placement so
 			// each instance sizes KV capacity from its ACTUAL placed GPU memory.
