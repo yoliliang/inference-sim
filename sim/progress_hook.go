@@ -66,6 +66,7 @@ type ProgressSnapshot struct {
 // All fields are value types — safe to hold indefinitely.
 type InstanceSnapshot struct {
 	ID        string
+	GPU       string // ours: GPU type of the instance (node pool gpu_type or --hardware)
 	QueueDepth int
 	BatchSize  int
 	KVUtilization float64

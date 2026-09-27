@@ -138,16 +138,25 @@ def parse_tag(basename, manifest):
 
 def window_rows(win, rate, seed, n):
     """Per-type rows from the metrics file's window block (sufficient statistics computed
-    by BLIS at the end of the run); same columns as run_rows."""
+    by BLIS at the end of the run); same columns as run_rows. Heterogeneous clusters add one
+    row per GPU type (type "gpu:<name>") over the requests taken by instances of that type,
+    with the instance count and the cost rate of that type; the "all" row carries the cluster's
+    cost rate. Cost rates are node-pool cost_per_hour sums, 0 without pools."""
     L = win["end_s"] - win["start_s"]
     rows = []
-    for t in TYPES + ["all"]:
-        s = win["types"].get(t)
+    info = win.get("gpu_info") or {}
+    cost_all = sum(v.get("cost_per_hour", 0.0) for v in info.values()) / 3600.0
+    keyed = [(t, win["types"].get(t)) for t in TYPES + ["all"]]
+    keyed += [(f"gpu:{g}", s) for g, s in sorted((win.get("gpus") or {}).items())]
+    for t, s in keyed:
         if s is None:
             continue
         a = s["arrived"]
+        gi = info.get(t[4:], {}) if t.startswith("gpu:") else None
         rows.append({
             "n": n, "rate": rate, "seed": seed, "type": t, "window_s": L,
+            "instances": gi.get("instances") if gi else (sum(v.get("instances", 0) for v in info.values()) or n),
+            "cost_per_s": gi.get("cost_per_hour", 0.0) / 3600.0 if gi else (cost_all if t == "all" else np.nan),
             "arrived": a, "completed": s["completed"],
             "unfinished_frac": s["unfinished"] / a if a else np.nan,
             "rejected_frac": s["rejected"] / a if a else np.nan,

@@ -690,6 +690,7 @@ func NewClusterSimulator(config DeploymentConfig, requestSource RequestSource, o
 		for _, inst := range cs.instances {
 			if inst.sim != nil {
 				inst.sim.Metrics.Lean = sim.NewLeanStats(config.WindowStartS, config.WindowEndS)
+				inst.sim.Metrics.Lean.SetGPU(inst.GPU())
 			}
 		}
 	}
@@ -1172,6 +1173,7 @@ func (c *ClusterSimulator) maybeDeliverProgressSnapshot(isFinal bool) {
 		instanceSnaps = append(instanceSnaps, sim.InstanceSnapshot{
 			Requests:          reqDetail,
 			ID:                string(inst.ID()),
+			GPU:               inst.GPU(), // ours
 			QueueDepth:        inst.QueueDepth(),
 			BatchSize:         inst.BatchSize(),
 			KVUtilization:     inst.KVUtilization(),
@@ -1863,6 +1865,17 @@ func (c *ClusterSimulator) aggregateMetrics() *sim.Metrics {
 	merged.StillQueued += len(c.sharedQueueMetrics)                                 // ours: INV-1 term for the shared queue
 	for _, rm := range c.sharedQueueMetrics {                                       // ours: the push path counts input tokens at enqueue
 		merged.TotalInputTokens += rm.NumPrefillTokens
+	}
+	merged.GPUByInstance = make(map[string]string, len(c.instances)) // ours: per-GPU window statistics
+	merged.GPUInfo = make(map[string]sim.GPUInfo)
+	for _, inst := range c.instances {
+		if inst.HasSim() {
+			merged.GPUByInstance[string(inst.ID())] = inst.GPU()
+			gi := merged.GPUInfo[inst.GPU()]
+			gi.Instances++
+			gi.CostPerHour += inst.CostPerHour
+			merged.GPUInfo[inst.GPU()] = gi
+		}
 	}
 	for _, inst := range c.instances {
 		m := inst.Metrics()

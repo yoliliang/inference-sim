@@ -133,6 +133,38 @@ def git_commit():
         return "unknown"
 
 
+# Placeholder node-pool costs per instance-hour for --pools (not used by the objective in
+# phase 1; recorded so that a cost column exists). Memory comes from hardware_config.json.
+COST_PER_HOUR = {"H100": 4.0, "A100-80": 2.0, "A100-SXM": 2.0, "L40S": 1.2}
+
+
+def parse_pools(spec):
+    """'H100:1,A100-80:1' -> [(gpu, share)]; shares are the mix ratio of instance counts."""
+    pools = []
+    for item in spec.split(","):
+        gpu, _, share = item.partition(":")
+        pools.append((gpu.strip(), int(share or 1)))
+    return pools
+
+
+def write_pools(dst, pools, n, blocks):
+    """Node-pool YAML for n instances split by the mix ratio, one GPU per node, TP 1, every
+    pool with the explicit block count (phase 1: same memory, only speed differs)."""
+    total = sum(s for _, s in pools)
+    if n % total:
+        sys.exit(f"instance count {n} is not a multiple of the pool shares {total}")
+    hw = json.load(open(os.path.join(ROOT, "hardware_config.json")))
+    lines = ["node_pools:"]
+    for gpu, share in pools:
+        if gpu not in hw:
+            sys.exit(f"unknown GPU {gpu}; hardware_config.json has {sorted(hw)}")
+        k = n * share // total
+        lines.append(f"  - {{name: {gpu.lower()}, gpu_type: {gpu}, gpus_per_node: 1, gpu_memory_gib: {hw[gpu]['MemoryGiB']:g}, "
+                     f"initial_nodes: {k}, max_nodes: {k}, cost_per_hour: {COST_PER_HOUR.get(gpu, 0.0)}, kv_blocks: {blocks}}}")
+    lines += ["instance_lifecycle:", "  warm_start_initial_instances: true", ""]
+    open(dst, "w", newline="\n").write("\n".join(lines))
+
+
 def write_spec(src, dst, rate, num_requests):
     txt = open(src).read()
     txt, n = re.subn(r"^aggregate_rate:.*$", f"aggregate_rate: {rate}", txt, flags=re.M)
@@ -153,6 +185,10 @@ def main():
                     help="scaling experiment: total rate = n x this for every n in --instances; folder is <date>_scaling_<name>")
     ap.add_argument("--seeds", default="1", help="comma list")
     ap.add_argument("--blocks", type=int, default=2500, help="--total-kv-blocks per instance")
+    ap.add_argument("--pools", default="",
+                    help="heterogeneous cluster: GPU types and mix ratio, e.g. H100:1,A100-80:1 (n instances are split "
+                         "by the ratio into node pools, each pool with --blocks per instance; instances 0.. fill the "
+                         "pools in the order given)")
     ap.add_argument("--horizon-s", type=float, default=None,
                     help="fixed-horizon mode: simulated seconds of continuous arrivals")
     ap.add_argument("--num-requests", type=int, default=3000,
@@ -223,7 +259,7 @@ def main():
         "warmup_s": a.warmup_s, "tail_s": a.tail_s,
         "state_sample_ms": a.state_sample_ms, "state_snapshot_s": a.state_snapshot_s,
         "keep_paths": a.keep_paths, "seeds_from_n": a.seeds_from_n,
-        "blocks": a.blocks, "profile": a.profile,
+        "blocks": a.blocks, "profile": a.profile, "pools": a.pools,
         "base_flags": BASE_FLAGS + PROFILES[a.profile] + mode_flags,
         "extra_flags": a.extra,
         "rates": rates, "seeds": seeds, "spec_template": a.spec,
@@ -256,6 +292,11 @@ def main():
     for n_inst, rate, rtag in points:
         spec = os.path.join(exp, "specs", f"{rtag}.yaml")
         write_spec(a.spec, spec, rate, 0 if fixed else a.num_requests)
+        pool_flags = []
+        if a.pools:
+            pools_yaml = os.path.join(exp, "specs", f"pools_n{n_inst}.yaml")
+            write_pools(pools_yaml, parse_pools(a.pools), n_inst, a.blocks)
+            pool_flags = ["--policy-config", pools_yaml]
         point_seeds = seeds[:seed_cut[1]] if seed_cut and n_inst >= seed_cut[0] else seeds
         for seed in point_seeds:
             tag = f"{rtag}_s{seed}"
@@ -265,7 +306,7 @@ def main():
             cmd = [BIN, "run", *BASE_FLAGS, "--num-instances", str(n_inst), *PROFILES[a.profile], *mode_flags,
                    *([] if keep else ["--drop-per-request-output"]),
                    "--workload-spec", spec,
-                   "--total-kv-blocks", str(a.blocks),
+                   "--total-kv-blocks", str(a.blocks), *pool_flags,
                    "--seed", str(seed),
                    "--metrics-path", out, *a.extra]
             if a.dry_run:

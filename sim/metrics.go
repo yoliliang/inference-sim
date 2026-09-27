@@ -60,6 +60,10 @@ type Metrics struct {
 	// Lean (ours): streaming per-request statistics; when set, completed requests are folded
 	// in at completion and removed from the maps above (see metrics_lean.go).
 	Lean *LeanStats
+	// GPUByInstance and GPUInfo (ours): GPU type of each instance and the instance count and
+	// cost per GPU type, set by the cluster for the per-GPU window statistics.
+	GPUByInstance map[string]string
+	GPUInfo       map[string]GPUInfo
 	// ours: steady-state window configuration for the file-only window block. WindowEndS
 	// 0 = no block. DropPerRequest omits the per-request array from the file.
 	WindowStartS   float64

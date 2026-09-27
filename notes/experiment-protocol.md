@@ -127,3 +127,44 @@ Levers, in order of value:
    MB for 16 instances over 600 s), which allows 8 instead of 6 concurrent runs at n = 64.
    It does not change the wall time of one run. Output is identical to the full path except
    that the stdout per-tenant block is omitted.
+
+## 9. Heterogeneous clusters (2026-09-26)
+
+Design approved by the user (memory: heterogeneous-study-design). Phase 1 mixes H100 and
+A100-80 instances (same 80 GB, the A100 about 1.7 times slower in decode and about 3 times in
+prefill, because the trained-physics coefficients are H100-fitted and other GPUs enter only
+through their peak FLOPs and bandwidth; call them "slow GPU variants", not calibrated A100s).
+Both pools get the same explicit block count so that the memory constraint is the one of the
+homogeneous study and only speed differs. Phase 2 (H100 + L40S) lets the auto capacity
+differ too.
+
+How to run: `--pools H100:1,A100-80:1` on sweep.py splits every n by the ratio into node
+pools (n must be a multiple of the shares), writes `specs/pools_n<n>.yaml` (one GPU per
+node, TP 1, `kv_blocks` = --blocks, placeholder costs 4 and 2 per instance-hour) and passes
+it as `--policy-config`. Instances 0.. fill the pools in the order given, so the first pool
+holds the low indices. Everything else (profile, seeds, horizon, window) is as in section 7;
+B1 and C need no change (llm-d's scorers are type-blind by construction, fcfs-pool is
+pull-based, the faster instance simply reaches its step boundaries more often).
+
+Control-model additions (commit dcc03f2c): the wake rule of the shared queue is a named
+option, `--wake-rule fastest-first` (default; shortest reference step time, index order
+among equals, so identical to the old lowest-index rule for identical instances),
+`lowest-index`, `round-robin`. Set policies receive the deciding instance's identity, KV
+capacity and step-time function (BatchContext.Instance); fcfs-pool ignores them. A shared
+request that can never fit an instance (context limit, capacity) is skipped by that
+instance and left for another; one that fits no instance is dropped at arrival
+(dropped_unservable).
+
+Statistics: the window block gains `gpus` (the same per-type statistics keyed by the GPU
+type of the instance that took the request; requests still in the shared queue at the
+horizon belong to no GPU and appear only under `types`) and `gpu_info` (instances and cost
+per hour per GPU type). analyze.py adds rows `gpu:<name>` with columns `instances` and
+`cost_per_s`; the "all" row carries the cluster cost rate. The state csv gains a `gpu`
+column. Cost is not in the objective in phase 1.
+
+Validation (scratch runs, not experiments): one A100-80 instance declared by --hardware and
+by a node pool give byte-identical outputs; H100 versus A100-80 ITL 23 versus 40 ms; a
+two-pool n = 2 run conserves requests and the H100 takes 1.7 times the A100's share; the
+seed-42 anchor and identical-instance runs are unchanged. Not done: per-instance step time
+for the (parked) Mooncake rule, shared-queue access for instances added after startup
+(autoscaler), per-GPU KV utilisation in compare.py.

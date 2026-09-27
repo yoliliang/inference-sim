@@ -44,6 +44,11 @@ func (l *LeanStats) completed(rm RequestMetrics, ttftUs, e2eUs float64, delayUs 
 	}
 }
 
+// SetGPU attributes every request this accumulator sees to one GPU type (the instance's).
+func (l *LeanStats) SetGPU(gpu string) {
+	l.win.gpuOf = func(RequestMetrics) string { return gpu }
+}
+
 // Merge appends another instance's accumulators (cluster aggregation).
 func (l *LeanStats) Merge(o *LeanStats) {
 	if o == nil {

@@ -39,7 +39,7 @@ var stateSampleHeader = []string{
 	"clock_us", "instance", "queue_depth", "batch_size",
 	"kv_used_blocks", "kv_total_blocks", "kv_utilization",
 	"preemptions", "completed", "in_flight",
-	"cluster_completed", "cluster_rejected", "cluster_preemptions", "is_final", "cluster_shared_queue",
+	"cluster_completed", "cluster_rejected", "cluster_preemptions", "is_final", "cluster_shared_queue", "gpu",
 }
 
 type stateSampler struct {
@@ -113,6 +113,7 @@ func (s *stateSampler) OnProgress(snap sim.ProgressSnapshot) {
 			strconv.FormatInt(snap.TotalPreemptions, 10),
 			strconv.FormatBool(snap.IsFinal),
 			strconv.Itoa(snap.SharedQueueDepth),
+			inst.GPU,
 		}
 		if err := s.w.Write(row); err != nil {
 			logrus.Errorf("state sample write failed: %v", err)
