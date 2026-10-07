@@ -105,6 +105,8 @@ var (
 	sharedQueuePush         bool               // ours: pooled control model (one shared queue, set decision per step)
 	setPolicy               string             // ours: set policy of the pooled batch formation
 	wakeRule                string             // ours: which idle instance a shared-queue arrival or completion wakes
+	fluidConfigPath         string             // ours: fluid-dual parameter file (ours/fluid/solve.py)
+	fluidEtaScale           float64            // ours: eta = scale * eta0
 	mooncakeMode            string             // ours: Mooncake admission mode (now | predict)
 	mooncakeTTFTTargetS     float64            // ours
 	mooncakeTBTTargetMs     float64            // ours
@@ -1284,6 +1286,17 @@ func resolvePolicies(cmd *cobra.Command) ([]sim.ScorerConfig, *sim.PolicyBundle)
 	if !sim.IsValidScheduler(scheduler) {
 		logrus.Fatalf("Unknown scheduler %q. Valid: %s", scheduler, strings.Join(sim.ValidSchedulerNames(), ", "))
 	}
+	if admissionPolicy == "fluid-dual" || routingPolicy == "fluid-dual" { // ours
+		if admissionPolicy != "fluid-dual" || routingPolicy != "fluid-dual" {
+			logrus.Fatalf("fluid-dual is one decision at arrival: set both --admission-policy fluid-dual and --routing-policy fluid-dual")
+		}
+		if fluidConfigPath == "" {
+			logrus.Fatalf("--admission-policy fluid-dual needs --fluid-config (ours/fluid/solve.py)")
+		}
+		if sharedQueuePush {
+			logrus.Fatalf("fluid-dual is a push policy (the pool stays empty); run it with --shared-queue-push=false")
+		}
+	}
 	if sharedQueuePush { // ours
 		if batchFormation != "" && batchFormation != "vllm" && batchFormation != "pooled" {
 			logrus.Fatalf("--shared-queue-push selects --batch-formation pooled; got %q", batchFormation)
@@ -1547,6 +1560,8 @@ func registerSimConfigFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&preemptionPolicy, "preemption-policy", "fcfs", "Preemption victim selection: fcfs (tail-of-batch), priority (least-urgent SLO tier), srf (fewest KV entries held, Kim et al. 2024)")
 	cmd.Flags().StringVar(&batchFormation, "batch-formation", "vllm", "ours: batch-formation strategy: vllm (upstream default), ours (custom FormBatch in sim/batch_formation_ours.go), pooled (set by --shared-queue-push)")
 	cmd.Flags().BoolVar(&sharedQueuePush, "shared-queue-push", false, "ours: pooled control model: admitted requests wait in one cluster-level shared queue and every instance takes from it at its step boundaries (no routing decision); selects batch formation pooled")
+	cmd.Flags().StringVar(&fluidConfigPath, "fluid-config", "", "ours: parameter file of the fluid-dual policy, written by ours/fluid/solve.py (required with --admission-policy fluid-dual)")
+	cmd.Flags().Float64Var(&fluidEtaScale, "fluid-eta-scale", 1.0, "ours: fluid-dual responsiveness eta = scale * eta0, eta0 = V*/J of the fluid solution")
 	cmd.Flags().StringVar(&wakeRule, "wake-rule", "fastest-first", "ours: with --shared-queue-push, which idle instance is offered a step when the shared queue gains a request or capacity is freed: fastest-first (shortest reference step time, index order among equals), lowest-index, round-robin")
 	cmd.Flags().StringVar(&setPolicy, "set-policy", "fcfs-pool", "ours: set policy of the pooled batch formation: fcfs-pool (own preempted requests first, then the shared queue in arrival order, stop at the first that does not fit)")
 
@@ -2595,6 +2610,8 @@ var runCmd = &cobra.Command{
 			SharedQueuePush:                 sharedQueuePush,  // ours
 			SharedQueueSetPolicy:            setPolicy,        // ours
 			SharedQueueWakeRule:             wakeRule,         // ours
+			FluidParams:                     loadFluidParams(fluidConfigPath), // ours
+			FluidEtaScale:                   fluidEtaScale,                    // ours
 			SnapshotRefreshInterval:         snapshotRefreshInterval,
 			CacheSignalDelay:                cacheSignalDelay,
 			PrefillInstances:                prefillInstances,
@@ -3316,4 +3333,16 @@ func applyPerRoleMoECommBackends(changed func(string) bool, isMoE, dispatchActiv
 		}
 	}
 	return nil
+}
+
+// loadFluidParams (ours) reads the fluid-dual parameter file; nil when no file is given.
+func loadFluidParams(path string) *sim.FluidDualParams {
+	if path == "" {
+		return nil
+	}
+	p, err := sim.LoadFluidDualParams(path)
+	if err != nil {
+		logrus.Fatalf("%v", err)
+	}
+	return p
 }

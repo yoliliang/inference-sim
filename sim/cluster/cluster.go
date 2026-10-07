@@ -289,6 +289,11 @@ func NewClusterSimulator(config DeploymentConfig, requestSource RequestSource, o
 			kvThreshold = 0.8 // GAIE DefaultKVCacheUtilThreshold (config.go:33)
 		}
 		admissionPolicy = sim.NewGAIELegacyAdmission(qdThreshold, kvThreshold, priorityMap)
+	case "fluid-dual": // ours
+		if config.FluidParams == nil {
+			panic("fluid-dual admission needs DeploymentConfig.FluidParams")
+		}
+		admissionPolicy = sim.NewFluidDual(config.FluidParams, config.FluidEtaScale)
 	case "mooncake": // ours
 		admissionPolicy = sim.NewMooncakeAdmission(config.MooncakeMode, config.MooncakeTTFTTargetS,
 			config.MooncakeTBTTargetMs, config.MooncakeTheta, config.MooncakeDecodeDurationS, config.MaxNumBatchedTokens)
@@ -520,7 +525,39 @@ func NewClusterSimulator(config DeploymentConfig, requestSource RequestSource, o
 	cs.cacheQueryFn = cs.snapshotProvider.BuildCacheQueryFn()
 
 	// Create routing policies now that cacheQueryFn is available.
-	cs.routingPolicy = sim.NewRoutingPolicyWithCache(config.RoutingPolicy, config.RoutingScorerConfigs, config.BlockSizeTokens, rng.ForSubsystem(sim.SubsystemRouter), cs.cacheQueryFn)
+	if config.RoutingPolicy == "fluid-dual" { // ours: one decision at arrival, shared with admission
+		fd, ok := cs.admissionPolicy.(*sim.FluidDual)
+		if !ok {
+			panic("fluid-dual routing requires fluid-dual admission")
+		}
+		cs.routingPolicy = fd
+	} else {
+		cs.routingPolicy = sim.NewRoutingPolicyWithCache(config.RoutingPolicy, config.RoutingScorerConfigs, config.BlockSizeTokens, rng.ForSubsystem(sim.SubsystemRouter), cs.cacheQueryFn)
+	}
+	if fd, ok := cs.admissionPolicy.(*sim.FluidDual); ok { // ours: live state for the fluid-dual prices
+		byID := make(map[string]*InstanceSimulator, len(cs.instances))
+		for _, inst := range cs.instances {
+			if inst.HasSim() {
+				inst.sim.TrackStage0()
+				byID[string(inst.ID())] = inst
+			}
+		}
+		for _, fi := range fd.Params().Instances {
+			if _, ok := byID[fi.ID]; !ok {
+				panic(fmt.Sprintf("fluid-dual: instance %s of the fluid solution does not exist (cluster has %d instances)", fi.ID, len(byID)))
+			}
+		}
+		if len(fd.Params().Instances) != len(byID) {
+			panic(fmt.Sprintf("fluid-dual: the fluid solution has %d instances, the cluster %d", len(fd.Params().Instances), len(byID)))
+		}
+		fd.SetState(func(id string) (int64, int64, bool) {
+			inst, ok := byID[id]
+			if !ok {
+				return 0, 0, false
+			}
+			return inst.sim.KVTokensInUse(), inst.sim.Stage0PromptTokens(), true
+		})
+	}
 	if len(config.PrefillScorerConfigs) > 0 {
 		cs.prefillRoutingPolicy = sim.NewRoutingPolicyWithCache("weighted", config.PrefillScorerConfigs, config.BlockSizeTokens, rng.ForSubsystem("prefill-router"), cs.cacheQueryFn)
 	}

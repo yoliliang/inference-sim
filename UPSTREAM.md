@@ -72,6 +72,8 @@ Branch: ours
 - sim/cluster/deployment.go (fifth item): SharedQueueWakeRule; sim/cluster/instance.go: CanServe, SetInstanceID
 - sim/window_stats.go (second item), sim/metrics_lean.go, sim/metrics.go (fifth item): window statistics also per GPU type of the handling instance (gpus, gpu_info); sim/cluster/cluster.go: GPUByInstance / GPUInfo in aggregateMetrics, lean accumulators tagged with the instance GPU; sim/progress_hook.go, cmd/state_sample.go: gpu column
 - sim/window_stats.go (third item), sim/metrics_lean.go: time-average sums of the draft objective (10) over the window (ta_completed, ta_sum_input_tokens, ta_sum_output_tokens, ta_time_in_system_s), fed by every accepted job
+- sim/simulator.go (eighth item), sim/event.go: stage-0 bookkeeping (TrackStage0, Stage0PromptTokens, KVTokensInUse), off unless the fluid-dual policy turns it on
+- sim/bundle.go, sim/admission.go: fluid-dual registered as admission and routing policy; sim/cluster/cluster.go, deployment.go: fluid-dual wiring (one object for admission and routing, live state reader); cmd/root.go: --fluid-config, --fluid-eta-scale
 - sim/shared_queue.go: SharedQueueAccess.Fits, ReferenceStepTime; sim/batch_formation.go: BatchContext.Instance (InstanceInfo); sim/batch_formation_pooled.go: skips candidates that never fit the instance; sim/simulator.go (seventh item): CanServe, instanceID, BatchContext.Instance
 
 ## Files added (ours)
@@ -81,6 +83,7 @@ Branch: ours
 - sim/admission_mooncake.go, sim/admission_mooncake_test.go
 - sim/shared_queue.go, sim/batch_formation_pooled.go, sim/batch_formation_pooled_test.go
 - sim/metrics_lean.go
+- sim/fluid_dual.go, sim/fluid_dual_test.go, cmd/steptime_ours.go (blis steptime), ours/fluid/ (common.py, stepfit.py, solve.py)
 - sim/batch_formation_ours.go
 - cmd/state_sample.go (periodic per-instance state CSV via the existing read-only sim.ProgressHook)
 - ours/ (specs, run.ps1, run.sh, sweep.py grid driver with B0/B1/floor/oracle/harness profiles, analyze.py steady-state analysis and panel plots, objective.py revenue-management objective, report.py README.pdf generator via pdflatex, visualization-brief.md; results/ and experiments/ gitignored)

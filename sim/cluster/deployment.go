@@ -123,6 +123,11 @@ type DeploymentConfig struct {
 	SharedQueueSetPolicy string // set policy name for the pooled batch formation (the SimConfig.SetPolicy field carries it into the instances)
 	SharedQueueWakeRule string // ours: fastest-first (default), lowest-index or round-robin; see ClusterSimulator.wakeIdleInstance
 
+	// ours: fluid-dual policy (admission and routing). FluidParams is the parameter file
+	// of ours/fluid/solve.py, FluidEtaScale the multiplier of eta0 = V*/J.
+	FluidParams   *sim.FluidDualParams
+	FluidEtaScale float64
+
 	// ours: Mooncake admission parameters. Only used when AdmissionPolicy = "mooncake".
 	MooncakeMode            string  // "now" (Early Rejection) or "predict" (Early Rejection based on Prediction)
 	MooncakeTTFTTargetS     float64 // TTFT target, seconds

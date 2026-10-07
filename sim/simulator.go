@@ -116,6 +116,8 @@ type Simulator struct {
 	stepEvent                 Event
 	sharedQueue               SharedQueueAccess // ours: nil in push mode
 	instanceID                string            // ours: set by the cluster (InstanceInfo.ID)
+	stage0                    map[*Request]struct{} // ours: stage-0 jobs assigned here (nil = not tracked)
+	stage0Tokens              int64                 // ours: their prompt tokens
 	emptyStepAt               int64             // ours: clock of the last step that formed an empty batch (-1 = never)
 	stepCount                 int
 	// map of request IDs to total num computed tokens (including cached tokens)
@@ -368,6 +370,7 @@ func (sim *Simulator) InjectArrival(req *Request) {
 // Metrics.Requests uses req.ArrivalTime for ArrivedAt to preserve original arrival time.
 // Used by cluster-mode online routing where event time differs from original arrival.
 func (sim *Simulator) InjectArrivalAt(req *Request, eventTime int64) {
+	sim.enterStage0(req) // ours: routed here, prefill not done
 	sim.Schedule(&ArrivalEvent{time: eventTime, Request: req})
 	sim.Metrics.Requests[req.ID] = NewRequestMetrics(req, float64(req.ArrivalTime)/1e6)
 }
@@ -492,6 +495,45 @@ func (sim *Simulator) RunningPrefillTokens() int64 {
 func (sim *Simulator) StepTimeFn() func(batch []*Request) int64 {
 	return sim.latencyModel.StepTime
 }
+
+// TrackStage0 (ours) turns on the bookkeeping of stage-0 jobs (model draft, Section 1):
+// jobs assigned to this instance whose prefill has not completed in the current attempt,
+// that is, in the API delay after routing, waiting, mid-prefill, or evicted. Read by the
+// fluid-dual policy. Off by default (no effect on any other run).
+func (sim *Simulator) TrackStage0() {
+	if sim.stage0 == nil {
+		sim.stage0 = make(map[*Request]struct{})
+	}
+}
+
+func (sim *Simulator) enterStage0(r *Request) {
+	if sim.stage0 == nil {
+		return
+	}
+	if _, ok := sim.stage0[r]; !ok {
+		sim.stage0[r] = struct{}{}
+		sim.stage0Tokens += r.InputLen()
+	}
+}
+
+func (sim *Simulator) leaveStage0(r *Request) {
+	if sim.stage0 == nil {
+		return
+	}
+	if _, ok := sim.stage0[r]; ok {
+		delete(sim.stage0, r)
+		sim.stage0Tokens -= r.InputLen()
+	}
+}
+
+// Stage0PromptTokens (ours) returns the prompt tokens of the stage-0 jobs (TrackStage0).
+func (sim *Simulator) Stage0PromptTokens() int64 { return sim.stage0Tokens }
+
+// Stage0Requests (ours) returns the number of stage-0 jobs (TrackStage0).
+func (sim *Simulator) Stage0Requests() int { return len(sim.stage0) }
+
+// KVTokensInUse (ours) returns the KV memory in use in tokens (used blocks times block size).
+func (sim *Simulator) KVTokensInUse() int64 { return sim.KVCache.UsedBlocks() * sim.KVCache.BlockSize() }
 
 // SetInstanceID (ours) records the cluster-level instance id for InstanceInfo.
 func (sim *Simulator) SetInstanceID(id string) { sim.instanceID = id }
@@ -630,6 +672,7 @@ func (sim *Simulator) EnqueueRequest(r *Request) {
 			r.ID, r.MaxOutputLen)
 		sim.Metrics.DroppedUnservable++
 		delete(sim.Metrics.Requests, r.ID)
+		sim.leaveStage0(r) // ours
 		// Callback for dropped requests (R1: don't silently discard, BC-17)
 		if sim.OnRequestDone != nil {
 			for _, next := range sim.OnRequestDone(r, sim.Clock) {
@@ -646,6 +689,8 @@ func (sim *Simulator) EnqueueRequest(r *Request) {
 				r.ID, r.InputLen(), sim.maxModelLen)
 			sim.Metrics.DroppedUnservable++
 			delete(sim.Metrics.Requests, r.ID)
+			sim.leaveStage0(r) // ours
+		sim.leaveStage0(r) // ours
 			if sim.OnRequestDone != nil {
 				for _, next := range sim.OnRequestDone(r, sim.Clock) {
 					sim.InjectArrival(next)
@@ -660,6 +705,8 @@ func (sim *Simulator) EnqueueRequest(r *Request) {
 					r.ID, totalSeqLen, r.InputLen(), r.MaxOutputLen, sim.maxModelLen)
 				sim.Metrics.DroppedUnservable++
 				delete(sim.Metrics.Requests, r.ID)
+			sim.leaveStage0(r) // ours
+		sim.leaveStage0(r) // ours
 				if sim.OnRequestDone != nil {
 					for _, next := range sim.OnRequestDone(r, sim.Clock) {
 						sim.InjectArrival(next)
@@ -677,6 +724,7 @@ func (sim *Simulator) EnqueueRequest(r *Request) {
 			r.ID, blocksNeeded, sim.KVCache.TotalCapacity())
 		sim.Metrics.DroppedUnservable++
 		delete(sim.Metrics.Requests, r.ID)
+		sim.leaveStage0(r) // ours
 		if sim.OnRequestDone != nil {
 			for _, next := range sim.OnRequestDone(r, sim.Clock) {
 				sim.InjectArrival(next)
@@ -692,6 +740,7 @@ func (sim *Simulator) EnqueueRequest(r *Request) {
 	// Request is counted as timed_out, not dropped_unservable.
 	if r.Deadline > 0 && r.Deadline <= sim.Clock {
 		r.State = StateTimedOut
+		sim.leaveStage0(r) // ours
 		sim.Metrics.TimedOutRequests++
 		if sim.OnRequestDone != nil {
 			for _, next := range sim.OnRequestDone(r, sim.Clock) {
@@ -788,6 +837,7 @@ func (sim *Simulator) recordKVUsageMetrics(stepDuration int64) {
 // response serialization) is non-blocking but still contributes to client-perceived latency.
 // For trained-physics, PostDecodeFixedOverhead adds ~777µs to E2E; for other backends it's 0.
 func (sim *Simulator) recordRequestCompletion(req *Request) {
+	sim.leaveStage0(req) // ours
 	// Release this request's adapter pin (cold-load gate, #1466): a completed
 	// request no longer uses its adapter, so the slot becomes evictable. Covers the
 	// normal and length-capped completion paths (both funnel through here); the
@@ -976,6 +1026,7 @@ func (sim *Simulator) scheduleBatch(now int64) {
 	for _, p := range batchResult.Preempted {
 		logrus.Debugf("<< Preemption: %s at %d ticks", p.Request.ID, now)
 		sim.Metrics.PreemptionCount++
+		sim.enterStage0(p.Request) // ours: evicted jobs restart at stage 0
 		// ours: per-request preemption accounting (file-only field, see RequestMetrics).
 		if rm, ok := sim.Metrics.Requests[p.Request.ID]; ok {
 			rm.PreemptionCount++
@@ -1205,6 +1256,7 @@ func (sim *Simulator) executeBatchStep(now int64) int64 {
 		// accumulation), so overwriting it is safe. TTFTSum is not accumulated here;
 		// it is accumulated exactly once at completion time in recordRequestCompletion.
 		if req.ProgressIndex == req.InputLen() && !req.TTFTSet {
+			sim.leaveStage0(req) // ours: prefill done, the job moves to stage 1
 			req.TTFTSet = true
 			req.FirstTokenTime = now + currStepAdvance + sim.latencyModel.OutputTokenProcessingTime() - req.ArrivalTime
 			sim.Metrics.RequestTTFTs[req.ID] = float64(req.FirstTokenTime)
@@ -1415,6 +1467,7 @@ func (sim *Simulator) AdoptSharedRequest(r *Request) bool {
 		logrus.Warnf("dropping request %s taken from the shared queue: %s", r.ID, why)
 		sim.Metrics.DroppedUnservable++
 		delete(sim.Metrics.Requests, r.ID)
+		sim.leaveStage0(r) // ours
 		return false
 	}
 	if r.MaxOutputLen == 0 && sim.maxModelLen > 0 && r.InputLen() < sim.maxModelLen {
@@ -1437,8 +1490,10 @@ func (sim *Simulator) AdoptSharedRequest(r *Request) bool {
 	sim.Metrics.TotalInputTokens += int(r.InputLen())
 	if r.Deadline > 0 && r.Deadline <= sim.Clock {
 		r.State = StateTimedOut
+		sim.leaveStage0(r) // ours
 		sim.Metrics.TimedOutRequests++
 		delete(sim.Metrics.Requests, r.ID)
+		sim.leaveStage0(r) // ours
 		return false
 	}
 	if sim.sloMap == nil {
@@ -1448,5 +1503,6 @@ func (sim *Simulator) AdoptSharedRequest(r *Request) bool {
 	if r.Deadline > 0 && r.Deadline <= sim.Horizon {
 		sim.Schedule(&TimeoutEvent{time: r.Deadline, Request: r})
 	}
+	sim.enterStage0(r) // ours
 	return true
 }

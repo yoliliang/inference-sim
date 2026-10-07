@@ -169,6 +169,7 @@ func (e *TimeoutEvent) Execute(sim *Simulator) {
 	}
 	wasRunning := e.Request.State == StateRunning
 	e.Request.State = StateTimedOut
+	sim.leaveStage0(e.Request) // ours
 	sim.Metrics.TimedOutRequests++
 
 	// Release the adapter pin (cold-load gate, #1466) for a request cancelled while

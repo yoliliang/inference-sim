@@ -1,0 +1,47 @@
+model: qwen/qwen3-14b
+spec: ours/specs/types3.yaml
+budget: 8192
+units: seconds
+gpus:
+  H100:
+    tau0: 0.012098194923254937
+    taup: 4.416767673493577e-06
+    taukv: 9.829278824145118e-08
+    r2: 0.999963197721904
+    mean_rel_error: 0.002396482125437595
+    p95_rel_error: 0.006212585759394783
+    max_rel_error: 0.024852654673538983
+    batches: 4000
+    r2_with_decode_count: 0.9999670859878281
+    decode_count_coef_s: 4.669653151256387e-06
+    step_range_s:
+    - 0.012195
+    - 0.104199
+  A100-80:
+    tau0: 0.0188704818606099
+    taup: 1.399983358405412e-05
+    taukv: 1.596087043713335e-07
+    r2: 0.9999097849877951
+    mean_rel_error: 0.003998109926740378
+    p95_rel_error: 0.010116595528887539
+    max_rel_error: 0.03629577001008646
+    batches: 4000
+    r2_with_decode_count: 0.9999109655424812
+    decode_count_coef_s: 5.0836354494768745e-06
+    step_range_s:
+    - 0.019128
+    - 0.217364
+  L40S:
+    tau0: 0.042911817539695134
+    taup: 1.2064990546898718e-05
+    taukv: 3.72516024699729e-07
+    r2: 0.9999801182869427
+    mean_rel_error: 0.0018598697838389025
+    p95_rel_error: 0.005413843713781432
+    max_rel_error: 0.021649214053056618
+    batches: 4000
+    r2_with_decode_count: 0.9999804878283133
+    decode_count_coef_s: 5.226317233874928e-06
+    step_range_s:
+    - 0.043218
+    - 0.358739
