@@ -31,7 +31,9 @@ type LeanStats struct {
 
 // NewLeanStats returns an empty accumulator for the given window (seconds by arrival time).
 func NewLeanStats(windowStartS, windowEndS float64) *LeanStats {
-	return &LeanStats{WindowStartS: windowStartS, WindowEndS: windowEndS, win: newWindowAcc()}
+	win := newWindowAcc()
+	win.startS, win.endS = windowStartS, windowEndS
+	return &LeanStats{WindowStartS: windowStartS, WindowEndS: windowEndS, win: win}
 }
 
 // completed folds one completed request in and reports whether it fell in the window.
@@ -39,6 +41,9 @@ func (l *LeanStats) completed(rm RequestMetrics, ttftUs, e2eUs float64, delayUs 
 	l.ttft = append(l.ttft, ttftUs)
 	l.e2e = append(l.e2e, e2eUs)
 	l.delay = append(l.delay, float64(delayUs))
+	if l.WindowEndS > 0 {
+		l.win.addTA(rm, rm.ArrivedAt+e2eUs/1e6, true) // every completion, whatever its arrival time
+	}
 	if l.WindowEndS > 0 && rm.ArrivedAt >= l.WindowStartS && rm.ArrivedAt < l.WindowEndS {
 		l.win.add(rm, ttftUs/1e3, e2eUs/1e3, float64(delayUs)/1e3, true, false)
 	}

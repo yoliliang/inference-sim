@@ -71,6 +71,7 @@ Branch: ours
 - sim/cluster/cluster_event.go (second item): shared-queue arrivals no instance can serve are dropped at arrival (DroppedUnservable); wake rules fastest-first / lowest-index / round-robin; sharedQueueAccess.Fits
 - sim/cluster/deployment.go (fifth item): SharedQueueWakeRule; sim/cluster/instance.go: CanServe, SetInstanceID
 - sim/window_stats.go (second item), sim/metrics_lean.go, sim/metrics.go (fifth item): window statistics also per GPU type of the handling instance (gpus, gpu_info); sim/cluster/cluster.go: GPUByInstance / GPUInfo in aggregateMetrics, lean accumulators tagged with the instance GPU; sim/progress_hook.go, cmd/state_sample.go: gpu column
+- sim/window_stats.go (third item), sim/metrics_lean.go: time-average sums of the draft objective (10) over the window (ta_completed, ta_sum_input_tokens, ta_sum_output_tokens, ta_time_in_system_s), fed by every accepted job
 - sim/shared_queue.go: SharedQueueAccess.Fits, ReferenceStepTime; sim/batch_formation.go: BatchContext.Instance (InstanceInfo); sim/batch_formation_pooled.go: skips candidates that never fit the instance; sim/simulator.go (seventh item): CanServe, instanceID, BatchContext.Instance
 
 ## Files added (ours)

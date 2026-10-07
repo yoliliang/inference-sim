@@ -108,7 +108,11 @@ def load_runs(exp):
     m = json.load(open(os.path.join(exp, "manifest.json")))
     op = os.path.join(exp, "objective_runs.csv")
     if os.path.exists(op):
-        o = pd.read_csv(op)[KEYS + ["value_per_s", "reward_per_s", "cost_per_s"]]
+        o = pd.read_csv(op)
+        if "revenue_definition" not in o.columns or set(o.revenue_definition) != {"time-average"}:
+            print(f"warning: {os.path.basename(exp)} has revenue values that are not the time-average "
+                  "definition of the model draft; rerun objective.py on runs written after 2026-10-07")
+        o = o[KEYS + ["value_per_s", "reward_per_s", "cost_per_s"]]
         s = s.merge(o, on=KEYS, how="left")
     # average TPOT: decode time per generated token, ratio of window totals
     mean_o = s.output_tok_per_s * s.window_s / s.completed.replace(0, np.nan)

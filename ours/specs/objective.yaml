@@ -4,12 +4,13 @@
 # (type1 7 percent, type2 4 percent, type3 16 percent). Prices are O(1) constants and do not
 # change with the system size n.
 #
-# Per completed request of type k the system earns
-#     reward_k  = pi_in_k * P + pi_out_k * o          (P input tokens, o output tokens)
-# and pays the congestion cost
-#     cost_k    = h_k * (e - a)                        (sojourn time in seconds, arrival to last token)
-# A rejected request earns and pays nothing. A request still unfinished at the horizon
-# earns nothing and pays h_k * (horizon - a), a lower bound on its true cost.
+# Objective of the model draft, eq. (10), long-run average net reward per unit time: a type-k
+# job that completes earns
+#     reward_k  = pi_in_k * P + pi_out_k * o          (P input tokens, o output tokens as BLIS counts them)
+# and every type-k job in the system (accepted, not yet departed) costs h_k per second.
+# A rejected job earns and pays nothing. objective.py estimates the rate over the steady-state
+# window of calendar time: rewards of jobs completing in it, minus h times the integral of the
+# number in system over it.
 #
 # Units: rewards per 1,000 tokens, h per second. Only the ratios matter for ranking policies.
 # Rates are read as total Poisson arrival rate; type shares come from the workload spec.

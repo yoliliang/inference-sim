@@ -31,6 +31,16 @@ type WindowTypeStats struct {
 	TTFT            Quantiles `json:"ttft"`
 	E2E             Quantiles `json:"e2e"`
 	Wait            Quantiles `json:"wait"` // scheduling delay
+
+	// Time-average statistics of the objective in the model draft, eq. (10), over the window
+	// [start, end) of calendar time (not a cohort of arrivals): rewards of the jobs that
+	// complete inside the window, whatever their arrival time, and the integral over the
+	// window of the number of jobs in the system (accepted, not yet departed). Rejected jobs
+	// never enter the system.
+	TACompleted       int     `json:"ta_completed"`
+	TASumInputTokens  int64   `json:"ta_sum_input_tokens"`
+	TASumOutputTokens int64   `json:"ta_sum_output_tokens"`
+	TATimeInSystemS   float64 `json:"ta_time_in_system_s"`
 }
 
 // GPUInfo describes the instances of one GPU type in the cluster.
@@ -79,6 +89,8 @@ type windowAcc struct {
 	gpuLat   map[string][3][]float64
 	gpuOf    func(rm RequestMetrics) string // "" = not attributed to a GPU (shared-queue residents, rejections)
 	horizonS float64                        // needed only for unfinished rows (censored time)
+	startS   float64                        // window bounds for the time-average statistics
+	endS     float64
 }
 
 func newWindowAcc() *windowAcc {
@@ -102,6 +114,39 @@ func (a *windowAcc) add(rm RequestMetrics, ttft, e2e, wait float64, completed, r
 	if a.gpuOf != nil {
 		if g := a.gpuOf(rm); g != "" {
 			a.addTo(a.gpus, a.gpuLat, g, rm, ttft, e2e, wait, completed, rejected)
+		}
+	}
+}
+
+// addTA adds one accepted job's contribution to the time-average statistics: departS is its
+// completion time, or the horizon if it is still in the system. Every accepted job is fed,
+// whatever its arrival time.
+func (a *windowAcc) addTA(rm RequestMetrics, departS float64, completed bool) {
+	stay := min(departS, a.endS) - max(rm.ArrivedAt, a.startS)
+	done := completed && departS >= a.startS && departS < a.endS
+	if stay <= 0 && !done {
+		return
+	}
+	keys := []string{rm.TenantID, "all"}
+	if a.gpuOf != nil {
+		if g := a.gpuOf(rm); g != "" {
+			keys = append(keys, "gpu:"+g)
+		}
+	}
+	for _, k := range keys {
+		var s *WindowTypeStats
+		if len(k) > 4 && k[:4] == "gpu:" {
+			s = getStats(a.gpus, k[4:])
+		} else {
+			s = getStats(a.types, k)
+		}
+		if stay > 0 {
+			s.TATimeInSystemS += stay
+		}
+		if done {
+			s.TACompleted++
+			s.TASumInputTokens += int64(rm.NumPrefillTokens)
+			s.TASumOutputTokens += int64(rm.NumDecodeTokens)
 		}
 	}
 }
@@ -160,6 +205,10 @@ func mergeStats(stats map[string]*WindowTypeStats, lats map[string][3][]float64,
 		s.SumCensoredS += os.SumCensoredS
 		s.SumPreemptions += os.SumPreemptions
 		s.SumWastedTokens += os.SumWastedTokens
+		s.TACompleted += os.TACompleted
+		s.TASumInputTokens += os.TASumInputTokens
+		s.TASumOutputTokens += os.TASumOutputTokens
+		s.TATimeInSystemS += os.TATimeInSystemS
 		l, ol := lats[t], olats[t]
 		for i := range l {
 			l[i] = append(l[i], ol[i]...)
@@ -197,20 +246,30 @@ func (m *Metrics) WindowStats(startS, endS, horizonS float64) *WindowStats {
 		acc = newWindowAcc()
 	}
 	acc.horizonS = horizonS
+	acc.startS, acc.endS = startS, endS
 	acc.gpuOf = func(rm RequestMetrics) string { return m.GPUByInstance[rm.HandledBy] }
 	for _, id := range sortedRequestIDs(m.Requests) { // sorted: deterministic float sums
 		rm := m.Requests[id]
+		e2e, completed := m.RequestE2Es[id]
+		if completed {
+			acc.addTA(rm, rm.ArrivedAt+e2e/1e6, true)
+		} else {
+			acc.addTA(rm, horizonS, false)
+		}
 		if rm.ArrivedAt < startS || rm.ArrivedAt >= endS {
 			continue
 		}
-		e2e, completed := m.RequestE2Es[id]
 		acc.add(rm, m.RequestTTFTs[id]/1e3, e2e/1e3, float64(m.RequestSchedulingDelays[id])/1e3, completed, false)
 	}
 	for _, rm := range m.ExtraRequests {
+		rejected := rm.Status == "rejected"
+		if !rejected {
+			acc.addTA(rm, horizonS, false) // still in the shared queue at the horizon
+		}
 		if rm.ArrivedAt < startS || rm.ArrivedAt >= endS {
 			continue
 		}
-		acc.add(rm, 0, 0, 0, false, rm.Status == "rejected")
+		acc.add(rm, 0, 0, 0, false, rejected)
 	}
 	out := acc.finish(startS, endS)
 	if len(m.GPUInfo) > 0 {

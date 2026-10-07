@@ -168,3 +168,24 @@ two-pool n = 2 run conserves requests and the H100 takes 1.7 times the A100's sh
 seed-42 anchor and identical-instance runs are unchanged. Not done: per-instance step time
 for the (parked) Mooncake rule, shared-queue access for instances added after startup
 (autoscaler), per-GPU KV utilisation in compare.py.
+
+## 10. Revenue definition aligned with the model draft (2026-10-07)
+
+The headline objective is now the time-average estimator of the draft's eq. (10) over the
+steady-state window [warmup, horizon - tail) of calendar time:
+
+    value_per_s = [ sum over jobs completing in the window of (pi_in P + pi_out o)/1000
+                    - sum over types of h * integral over the window of N_type(t) dt ] / L
+
+o counts output tokens as BLIS does; the September 30 draft now has the prefill pass produce
+the first token, so a job with L output tokens earns pi_in P + pi_out L in both. N_type(t)
+counts accepted jobs from arrival to the last token (pool and instances); rejected jobs never
+enter. BLIS writes the sufficient statistics in the window block (ta_completed,
+ta_sum_input_tokens, ta_sum_output_tokens, ta_time_in_system_s, per type, all and per GPU
+type), fed by every accepted job whatever its arrival time. The earlier arrival-cohort value
+is kept as value_cohort_per_s. objective.py writes headline.csv: revenue first, then
+end-to-end latency and TTFT (latencies stay cohort statistics of the window arrivals).
+
+Validation (2026-10-07_revenue_check_B1_kv6500, B1, n = 4, 6,500 blocks, 5 seeds): inside
+capacity (44 req/s) 74.1 time-average versus 74.3 cohort; overloaded (58 req/s) -1.2 versus
+-2.8, within the band (+-10.8); lean and full statistics agree to 3e-15.
