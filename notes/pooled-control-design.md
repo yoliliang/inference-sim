@@ -210,4 +210,47 @@ Validation results:
    above capacity (90 req/s) waits and unfinished fractions are the same (13.0 versus 13.1
    s, 1.7 percent), the backlog sits in the shared queue (mean 199, max 496 in the window)
    and the local queues hold only preempted requests (0.26 on average).
-4. Scaling and compare folders: see 2026-09-26_compare_C_scale_load0.9 and _load1.2.
+4. Scaling and compare folders 2026-09-26_compare_C_scale_load0.9 and _load1.2 were run
+   before the user had accepted a default set policy and were moved to
+   experiments_archive; they are not results.
+
+Later changes: fcfs-pool accepted by the user as the default set policy (2026-09-26);
+`--wake-rule` with default fastest-first, identical to lowest-index for identical
+instances (commit dcc03f2c); requests that no instance can serve are dropped at arrival,
+candidates that never fit an instance are left for another; BatchContext.Instance gives a
+set policy the deciding instance's identity, capacity and step-time function.
+
+## 8. Correspondence with the model draft (Fluid Model/model_with_markovian_review.pdf, Sept 30 2026)
+
+The shared-queue mode is the simulator form of the draft's Section 2 (restricted joint
+batching and eviction control): every arrival is admitted to the shared pool Q_i, an
+instance pulls a job only when it puts the job into its next batch (pulling is the
+routing), the pulled job stays on that instance until it completes, and decisions are
+made by the instance whose round just ended.
+
+| Draft Section 2 | Simulator (--shared-queue-push) |
+|---|---|
+| pool Q_i | SharedQueue (arrival order), after the fixed API delay |
+| WIP W^j_{i,s}, batch B^j | the instance's running batch and local wait queue (preempted jobs) |
+| action g_i (pull), b_{i,s} (batch), e_{i,s} (evict) | set policy orders candidates from local WIP and the pool; Phase 1 of vLLM evicts |
+| no admission variable | admission policy always-admit by default (a separate admission rule is possible) |
+| evicted job stays on its instance at stage 0 | same (vLLM convention, user decision) |
+| constraints (16): token budget b_j, memory M_j | same, M_j counted in 16-token blocks |
+
+Differences, all known and accepted unless the user says otherwise:
+
+1. Eviction is not a free choice. The draft lets the controller evict any resident job at a
+   round start; the simulator evicts only when the next batch does not fit (vLLM Phase 1),
+   with a pluggable victim rule (fcfs = most recently started, srf).
+2. A step that evicted admits no new job (vLLM convention); the draft only forbids
+   rebatching the evicted job itself at that epoch.
+3. Idle instances. The draft runs idle rounds of mean tau_0 and decides only at their ends;
+   the simulator wakes an idle instance at once when a job arrives or capacity frees, chosen
+   by the wake rule.
+4. Round durations are BLIS's deterministic step times, not exponential (the draft's
+   Section 2 uses exponential durations for a Markov formulation).
+5. Prefill is chunked by vLLM's rule (min of remaining prompt and remaining token budget);
+   the draft prefills a pulled job whole.
+
+The fluid-dual policy of the draft's Section 4 is a push policy (the pool stays empty, every
+accepted job is dispatched at arrival); it runs on the push path, not on the shared queue.
