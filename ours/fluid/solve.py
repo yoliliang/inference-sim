@@ -147,32 +147,45 @@ def fluid_quantities(x, c, M, b):
 
 
 def multipliers(x, c, q, lam, workdir, name):
+    """KKT multipliers at x* by least violation. x* comes from a global solve with a finite
+    optimality gap, so it satisfies (31) and complementary slackness only approximately;
+    hard-zeroing the multipliers of nearly tight constraints can make the system infeasible.
+    Instead: nu, gammaM, gammaB >= 0 minimise
+        1e4 * (stationarity residuals)  +  1e2 * sum(slack_k * multiplier_k)  +  1e-3 * sum(gamma),
+    where the stationarity residuals are e+ on r - c* - gamma a - nu <= 0 for every (i, j) and
+    e- on the reverse inequality where x*_ij > 0, and slack_k >= 0 is the slack of constraint
+    k at x* (relative for the flow rows). The last term picks the smallest capacity prices
+    among exact solutions. The largest residual is reported."""
     I, J = x.shape
     tol_x = 1e-7 * max(1.0, lam.max())
-    flow_slack = x.sum(axis=1) < lam - 1e-6 * np.maximum(lam, 1.0)
-    mem_slack = q["loadM"] < 1 - 1e-6
-    tok_slack = q["loadB"] < 1 - 1e-6
+    s_flow = np.maximum(0.0, lam - x.sum(axis=1)) / np.maximum(lam, 1e-12)
+    s_mem = np.maximum(0.0, 1.0 - q["loadM"])
+    s_tok = np.maximum(0.0, 1.0 - q["loadB"])
     rhs = c["r"][:, None] - q["cstar"]
-    lines = ["Minimize", " obj: " + " ".join(f"+ gm_{j} + gb_{j}" for j in range(J)) + " "
-             + " ".join(f"+ 10000 e_{i}_{j}" for i in range(I) for j in range(J) if x[i, j] > tol_x), "Subject To"]
+    obj = []
+    for i in range(I):
+        obj.append(term(1e2 * s_flow[i], f"nu_{i}"))
+    for j in range(J):
+        obj.append(term(1e2 * s_mem[j] + 1e-3, f"gm_{j}"))
+        obj.append(term(1e2 * s_tok[j] + 1e-3, f"gb_{j}"))
+    for i in range(I):
+        for j in range(J):
+            obj.append(f"+ 10000 ep_{i}_{j}")
+            if x[i, j] > tol_x:
+                obj.append(f"+ 10000 em_{i}_{j}")
+    lines = ["Minimize", " obj: " + " ".join(obj), "Subject To"]
     for i in range(I):
         for j in range(J):
             lhs = f"{term(c['aM'][i, j], f'gm_{j}')} {term(c['aB'][i, j], f'gb_{j}')} + 1 nu_{i}"
-            lines.append(f" ge_{i}_{j}: {lhs} >= {num(rhs[i, j])}")
+            lines.append(f" ge_{i}_{j}: {lhs} + 1 ep_{i}_{j} >= {num(rhs[i, j])}")
             if x[i, j] > tol_x:
-                lines.append(f" le_{i}_{j}: {lhs} - 1 e_{i}_{j} <= {num(rhs[i, j])}")
-    lines.append("Bounds")
-    for i in range(I):
-        lines.append(f" 0 <= nu_{i} <= {0 if flow_slack[i] else 1e9}")
-    for j in range(J):
-        lines.append(f" 0 <= gm_{j} <= {0 if mem_slack[j] else 1e9}")
-        lines.append(f" 0 <= gb_{j} <= {0 if tok_slack[j] else 1e9}")
-    lines.append("End")
+                lines.append(f" le_{i}_{j}: {lhs} - 1 em_{i}_{j} <= {num(rhs[i, j])}")
+    lines.append("End")  # all variables default to [0, inf)
     vals, _ = run_gurobi("\n".join(lines) + "\n", workdir, name, {"FeasibilityTol": 1e-9, "OptimalityTol": 1e-9})
     nu = np.array([vals.get(f"nu_{i}", 0.0) for i in range(I)])
     gm = np.array([vals.get(f"gm_{j}", 0.0) for j in range(J)])
     gb = np.array([vals.get(f"gb_{j}", 0.0) for j in range(J)])
-    idx = rhs - gm[None, :] * c["aM"] - gb[None, :] * c["aB"]      # r - c* - gamma a, at zero deviation
+    idx = rhs - gm[None, :] * c["aM"] - gb[None, :] * c["aB"]      # I*_ij = r - c* - gamma* a
     resid_pos = np.where(x > tol_x, np.abs(idx - nu[:, None]), 0.0).max()
     resid_zero = np.where(x <= tol_x, np.maximum(idx - nu[:, None], 0.0), 0.0).max()
     return nu, gm, gb, idx, float(max(resid_pos, resid_zero))
