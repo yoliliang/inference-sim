@@ -45,7 +45,7 @@ func fluidRouterState(ids ...string) *RouterState {
 
 func newTestFluid(t *testing.T, st fluidTestState) *FluidDual {
 	t.Helper()
-	f := NewFluidDual(fluidTestParams(), FluidDualOptions{EtaScale: 1, KScale: 1})
+	f := NewFluidDual(fluidTestParams(), FluidDualOptions{Mode: "rate-tracking", EtaScale: 1, KScale: 1})
 	f.SetState(st.read)
 	return f
 }
@@ -201,5 +201,58 @@ func TestStage0Bookkeeping(t *testing.T) {
 	s.leaveStage0(r)
 	if s.Stage0PromptTokens() != 0 {
 		t.Fatalf("after prefill: %d tokens", s.Stage0PromptTokens())
+	}
+}
+
+// Index mode (current draft, Definition 1): accept iff max_j I_ij >= 0, route to the largest
+// index, ties to the smallest instance index.
+func newIndexFluid(st fluidTestState) *FluidDual {
+	f := NewFluidDual(fluidTestParams(), FluidDualOptions{EtaScale: 1})
+	f.SetState(st.read)
+	return f
+}
+
+func TestFluidDualIndex_TiesGoToSmallestInstance(t *testing.T) {
+	f := newIndexFluid(atTarget())
+	req := &Request{ID: "r1", TenantID: "a"}
+	if ok, _ := f.Admit(req, fluidRouterState("i0", "i1")); !ok {
+		t.Fatal("index 0.7 >= 0 must be accepted")
+	}
+	if d := f.Route(req, fluidRouterState("i0", "i1")); d.TargetInstance != "i0" {
+		t.Fatalf("equal indices must go to the smallest instance, got %s", d.TargetInstance)
+	}
+}
+
+func TestFluidDualIndex_RoutesToLargestIndex(t *testing.T) {
+	st := atTarget()
+	f := newIndexFluid(st)
+	st["i0"] = [2]int64{900, 50} // i0 above its memory level: higher price, lower index
+	req := &Request{ID: "r2", TenantID: "a"}
+	f.Admit(req, fluidRouterState("i0", "i1"))
+	if d := f.Route(req, fluidRouterState("i0", "i1")); d.TargetInstance != "i1" {
+		t.Fatalf("the job must go to the larger index, got %s", d.TargetInstance)
+	}
+	// only routable instances are considered
+	req3 := &Request{ID: "r3", TenantID: "a"}
+	f.Admit(req3, fluidRouterState("i0"))
+	if d := f.Route(req3, fluidRouterState("i0")); d.TargetInstance != "i0" {
+		t.Fatalf("only routable instances may be chosen, got %s", d.TargetInstance)
+	}
+}
+
+func TestFluidDualIndex_RejectsWhenEveryIndexIsNegative(t *testing.T) {
+	// type b: I* = 0.2; memory 3,000 tokens above target on both: gammaM = 1 + 2 * 3 = 7,
+	// index = 0.5 - 0.1 - 7 * 0.2 < 0 everywhere
+	f := newIndexFluid(fluidTestState{"i0": {3500, 50}, "i1": {3500, 50}})
+	if ok, _ := f.Admit(&Request{ID: "r", TenantID: "b"}, fluidRouterState("i0", "i1")); ok {
+		t.Fatal("expected a rejection")
+	}
+	if f.Rejected["b"] != 1 || f.Accepted["b"] != 0 {
+		t.Fatalf("counters %v %v", f.Accepted, f.Rejected)
+	}
+	// the same type is accepted at the fluid levels, where its index is I* = 0.2 >= 0
+	f.SetState(atTarget().read)
+	if ok, _ := f.Admit(&Request{ID: "r2", TenantID: "b"}, fluidRouterState("i0", "i1")); !ok {
+		t.Fatal("index 0.2 >= 0 must be accepted")
 	}
 }

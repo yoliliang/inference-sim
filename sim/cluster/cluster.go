@@ -293,7 +293,7 @@ func NewClusterSimulator(config DeploymentConfig, requestSource RequestSource, o
 		if config.FluidParams == nil {
 			panic("fluid-dual admission needs DeploymentConfig.FluidParams")
 		}
-		admissionPolicy = sim.NewFluidDual(config.FluidParams, sim.FluidDualOptions{
+		admissionPolicy = sim.NewFluidDual(config.FluidParams, sim.FluidDualOptions{Mode: config.FluidMode,
 			EtaScale: config.FluidEtaScale, KScale: config.FluidKScale, Weights: config.FluidWeights})
 	case "mooncake": // ours
 		admissionPolicy = sim.NewMooncakeAdmission(config.MooncakeMode, config.MooncakeTTFTTargetS,

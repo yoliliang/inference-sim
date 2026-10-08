@@ -1,7 +1,16 @@
 package sim
 
-// ours: the fluid-dual policy of the model draft (Fluid Model/model_with_markovian_review.pdf,
-// Section 4, Definition 1), admission and routing part. Batching and eviction (parts 2 and 3
+// ours: the fluid-dual policy of the model draft, Section 4, Definition 1, admission and
+// routing part. Two versions of the definition exist and both are implemented:
+//
+//   mode "index" (default; draft model_with_markovian_review_original_policy.pdf, Oct 2026):
+//     when a type-i job arrives, compute I_ij(t) for every instance j; accept iff
+//     max_j I_ij(t) >= 0 and dispatch to an instance with the largest index, ties to the
+//     smallest instance index. No admission fractions or routing shares are enforced.
+//   mode "rate-tracking" (the intermediate draft): the procedure described below
+//     (provisional rates, projection, admission accumulator, routing deficits).
+//
+// Both use the same state prices and indices. Batching and eviction (parts 2 and 3
 // of the definition) are vLLM's default rules, which the simulator already executes: every
 // prefilled job continues, stage-0 jobs join in arrival order while the token budget and the
 // memory hold, and the most recently started job is evicted first.
@@ -130,6 +139,7 @@ type FluidDualState func(instanceID string) (kvTokens, stage0Prompt int64, ok bo
 
 // FluidDualOptions are the tuning constants of the policy.
 type FluidDualOptions struct {
+	Mode     string  // "index" (default) or "rate-tracking"
 	EtaScale float64 // eta = EtaScale * eta0
 	KScale   float64 // k_ij = KScale * lambda_i / r_i
 	Weights  string  // projection weights: "inverse-rate" (omega_ij = 1/lambda_i, default) or "uniform" (omega_ij = 1)
@@ -138,6 +148,7 @@ type FluidDualOptions struct {
 // FluidDual is the policy object.
 type FluidDual struct {
 	p       *FluidDualParams
+	mode    string
 	eta     float64
 	state   FluidDualState
 	types   map[string]int
@@ -167,14 +178,23 @@ type FluidDual struct {
 
 // NewFluidDual builds the policy.
 func NewFluidDual(p *FluidDualParams, o FluidDualOptions) *FluidDual {
-	if o.EtaScale < 0 || math.IsNaN(o.EtaScale) || o.KScale <= 0 || math.IsNaN(o.KScale) {
-		panic(fmt.Sprintf("fluid-dual: need eta scale >= 0 and k scale > 0, got %v and %v", o.EtaScale, o.KScale))
+	if o.EtaScale < 0 || math.IsNaN(o.EtaScale) || o.KScale < 0 || math.IsNaN(o.KScale) {
+		panic(fmt.Sprintf("fluid-dual: need eta scale >= 0 and k scale >= 0 (0 = default 1), got %v and %v", o.EtaScale, o.KScale))
 	}
 	if o.Weights != "" && o.Weights != "inverse-rate" && o.Weights != "uniform" {
 		panic(fmt.Sprintf("fluid-dual: unknown projection weights %q", o.Weights))
 	}
 	nI, nJ := len(p.Types), len(p.Instances)
-	f := &FluidDual{p: p, eta: o.EtaScale * p.Meta.Eta0, types: map[string]int{}, chosen: map[string]string{},
+	if o.Mode == "" {
+		o.Mode = "index"
+	}
+	if o.Mode != "index" && o.Mode != "rate-tracking" {
+		panic(fmt.Sprintf("fluid-dual: unknown mode %q (index, rate-tracking)", o.Mode))
+	}
+	if o.KScale == 0 {
+		o.KScale = 1
+	}
+	f := &FluidDual{p: p, mode: o.Mode, eta: o.EtaScale * p.Meta.Eta0, types: map[string]int{}, chosen: map[string]string{},
 		nI: nI, nJ: nJ, lam: make([]float64, nI), r: make([]float64, nI),
 		muF: make([]float64, nI), muM: make([]float64, nJ), muB: make([]float64, nJ), f: make([]float64, nI),
 		live: make([]bool, nJ), Accepted: map[string]int64{}, Rejected: map[string]int64{},
@@ -357,6 +377,7 @@ func (f *FluidDual) solve1D(u, a, w []float64, rhs float64) float64 {
 
 // FluidDualReport summarises a run of the policy (whole run, not only the window).
 type FluidDualReport struct {
+	Mode         string                      `json:"mode"`
 	Eta          float64                     `json:"eta"`
 	Accepted     map[string]int64            `json:"accepted"`
 	Rejected     map[string]int64            `json:"rejected"`
@@ -369,7 +390,7 @@ type FluidDualReport struct {
 
 // Report returns the run diagnostics.
 func (f *FluidDual) Report() *FluidDualReport {
-	r := &FluidDualReport{Eta: f.eta, Accepted: f.Accepted, Rejected: f.Rejected, Dispatched: f.Dispatched,
+	r := &FluidDualReport{Mode: f.mode, Eta: f.eta, Accepted: f.Accepted, Rejected: f.Rejected, Dispatched: f.Dispatched,
 		Projections: f.ProjCalls, MaxViolation: f.ProjMaxGap, FluidValue: f.p.Meta.Value}
 	if f.ProjCalls > 0 {
 		r.MeanSweeps = float64(f.ProjSweeps) / float64(f.ProjCalls)
@@ -382,6 +403,9 @@ func (f *FluidDual) Admit(req *Request, state *RouterState) (bool, string) {
 	i, ok := f.types[req.TenantID]
 	if !ok {
 		panic(fmt.Sprintf("fluid-dual: request type %q is not in the fluid solution", req.TenantID))
+	}
+	if f.mode == "index" {
+		return f.admitByIndex(i, req, state)
 	}
 	f.desiredRates(state)
 	ai := 0.0
@@ -415,6 +439,42 @@ func (f *FluidDual) Admit(req *Request, state *RouterState) (bool, string) {
 	f.Dispatched[req.TenantID][id]++
 	f.chosen[req.ID] = id
 	return true, fmt.Sprintf("fluid-dual: alpha %.4f, routed to %s", alpha, id)
+}
+
+// admitByIndex is Definition 1 of the current draft: accept iff the largest index is
+// nonnegative (within a relative rounding tolerance), dispatch to the largest index, ties to
+// the smallest instance index (parameter order is instance-index order).
+func (f *FluidDual) admitByIndex(i int, req *Request, state *RouterState) (bool, string) {
+	if f.state == nil {
+		panic("fluid-dual: no state reader wired")
+	}
+	routable := make(map[string]bool, len(state.Snapshots))
+	for _, s := range state.Snapshots {
+		routable[s.ID] = true
+	}
+	best, bestIdx := -1, math.Inf(-1)
+	for j := range f.p.Instances {
+		id := f.p.Instances[j].ID
+		if !routable[id] {
+			continue
+		}
+		kv, s0, ok := f.state(id)
+		if !ok {
+			panic(fmt.Sprintf("fluid-dual: instance %s of the fluid solution does not exist in the cluster", id))
+		}
+		if idx := f.Index(i, j, kv, s0); idx > bestIdx {
+			best, bestIdx = j, idx
+		}
+	}
+	if best < 0 || bestIdx < -1e-9*math.Max(1, math.Abs(f.r[i])) {
+		f.Rejected[req.TenantID]++
+		return false, fmt.Sprintf("fluid-dual: max index %.6g < 0", bestIdx)
+	}
+	id := f.p.Instances[best].ID
+	f.Accepted[req.TenantID]++
+	f.Dispatched[req.TenantID][id]++
+	f.chosen[req.ID] = id
+	return true, fmt.Sprintf("fluid-dual: index %.6g on %s", bestIdx, id)
 }
 
 // Route returns the instance chosen at admission. A job admitted by another policy is sent

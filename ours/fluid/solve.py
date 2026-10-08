@@ -83,7 +83,29 @@ def run_gurobi(lp_text, workdir, name, params):
     return vals, text
 
 
-def solve(types, gpus, lam, M, b, fit, time_limit, workdir, name):
+def start_from(path, types, gpus, w, tau0, d):
+    """A feasible starting point for J instances from a solution for J0 instances of the same
+    GPU type with the same per-instance arrival rate: every instance column of the smaller
+    solution is repeated J / J0 times (feasible: each instance keeps its loads, each type's
+    total flow scales by J / J0 like lambda). Columns are ordered by utilisation, largest
+    first, to satisfy the symmetry-breaking rows. Returns {var: value} or None."""
+    old = yaml.safe_load(open(path))
+    J0, J = len(old["instances"]), len(gpus)
+    if J % J0 or J <= J0 or len(set(gpus)) != 1 or any(o["gpu"] != gpus[0] for o in old["instances"]):
+        return None
+    cols = [[o["types"][t["name"]]["x"] for t in types] for o in old["instances"]] * (J // J0)
+    cols.sort(key=lambda c: -sum(w[i, 0] * c[i] for i in range(len(types))))
+    start = {}
+    for j, col in enumerate(cols):
+        rho = sum(w[i, j] * col[i] for i in range(len(types)))
+        D = sum(d[i] * col[i] for i in range(len(types)))
+        for i in range(len(types)):
+            start[f"x_{i}_{j}"] = col[i]
+        start[f"g_{j}"] = tau0[j] * D / (1.0 - rho)
+    return start
+
+
+def solve(types, gpus, lam, M, b, fit, time_limit, workdir, name, start_path=None):
     I, J = len(types), len(gpus)
     r = np.array([t["r"] for t in types])
     d = np.array([t["d"] for t in types])
@@ -119,9 +141,14 @@ def solve(types, gpus, lam, M, b, fit, time_limit, workdir, name):
     for j in range(J):
         lines.append(f" 0 <= g_{j} <= {num(U)}")
     lines.append("End")
-    vals, log = run_gurobi("\n".join(lines) + "\n", workdir, name,
-                           {"NonConvex": 2, "MIPGap": GAP, "MIPGapAbs": 1e-9, "FeasibilityTol": 1e-9,
-                            "OptimalityTol": 1e-9, "TimeLimit": time_limit, "Threads": 0})
+    params = {"NonConvex": 2, "MIPGap": GAP, "MIPGapAbs": 1e-9, "FeasibilityTol": 1e-9,
+              "OptimalityTol": 1e-9, "TimeLimit": time_limit, "Threads": 0}
+    start = start_from(start_path, types, gpus, w, tau0, d) if start_path else None
+    if start:
+        mst = os.path.join(workdir, name + ".mst")
+        open(mst, "w").write("".join(f"{k} {num(v)}\n" for k, v in start.items()))
+        params["InputFile"] = mst
+    vals, log = run_gurobi("\n".join(lines) + "\n", workdir, name, params)
     x = np.array([[max(0.0, vals.get(X(i, j), 0.0)) for j in range(J)] for i in range(I)])
     bound = gap = None
     mm = re.findall(r"Best objective ([-+0-9.eE]+), best bound ([-+0-9.eE]+), gap ([-+0-9.eE]+)%", log)
@@ -202,6 +229,7 @@ def main():
     ap.add_argument("--objective", default=os.path.join(common.OURS, "specs", "objective.yaml"))
     ap.add_argument("--stepfit", default=os.path.join(common.HERE, "stepfit.yaml"))
     ap.add_argument("--time-limit", type=float, default=600)
+    ap.add_argument("--start", default="", help="fluid solution for fewer instances of the same GPU type and the same per-instance rate, replicated as a starting point")
     ap.add_argument("--workdir", default=os.path.join(common.HERE, "work"))
     ap.add_argument("--out", required=True)
     ap.add_argument("--quiet", action="store_true")
@@ -219,7 +247,7 @@ def main():
     b = float(a.budget)
     tag = os.path.splitext(os.path.basename(a.out))[0]
 
-    x, c, bound, gap, status = solve(types, gpus, lam, M, b, fit, a.time_limit, a.workdir, tag)
+    x, c, bound, gap, status = solve(types, gpus, lam, M, b, fit, a.time_limit, a.workdir, tag, a.start or None)
     q = fluid_quantities(x, c, M, b)
     nu, gm, gb, idx, resid = multipliers(x, c, q, lam, a.workdir, tag + "_kkt")
     J = len(gpus)

@@ -107,6 +107,7 @@ var (
 	wakeRule                string             // ours: which idle instance a shared-queue arrival or completion wakes
 	fluidConfigPath         string             // ours: fluid-dual parameter file (ours/fluid/solve.py)
 	fluidEtaScale           float64            // ours: eta = scale * eta0
+	fluidMode               string             // ours: fluid-dual definition (index | rate-tracking)
 	fluidKScale             float64            // ours: k_ij = scale * lambda_i / r_i
 	fluidWeights            string             // ours: projection weights
 	mooncakeMode            string             // ours: Mooncake admission mode (now | predict)
@@ -1564,6 +1565,7 @@ func registerSimConfigFlags(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&sharedQueuePush, "shared-queue-push", false, "ours: pooled control model: admitted requests wait in one cluster-level shared queue and every instance takes from it at its step boundaries (no routing decision); selects batch formation pooled")
 	cmd.Flags().StringVar(&fluidConfigPath, "fluid-config", "", "ours: parameter file of the fluid-dual policy, written by ours/fluid/solve.py (required with --admission-policy fluid-dual)")
 	cmd.Flags().Float64Var(&fluidEtaScale, "fluid-eta-scale", 1.0, "ours: fluid-dual responsiveness eta = scale * eta0, eta0 = V*/J of the fluid solution")
+	cmd.Flags().StringVar(&fluidMode, "fluid-mode", "index", "ours: fluid-dual definition: index (accept iff max_j I_ij >= 0, route to the largest index; current draft) or rate-tracking (projection, admission accumulator, routing deficits; intermediate draft)")
 	cmd.Flags().Float64Var(&fluidKScale, "fluid-k-scale", 1.0, "ours: fluid-dual response coefficients k_ij = scale * lambda_i / r_i (index change to provisional-rate change, eq. 34)")
 	cmd.Flags().StringVar(&fluidWeights, "fluid-weights", "inverse-rate", "ours: fluid-dual projection weights omega_ij: inverse-rate (1/lambda_i) or uniform (1)")
 	cmd.Flags().StringVar(&wakeRule, "wake-rule", "fastest-first", "ours: with --shared-queue-push, which idle instance is offered a step when the shared queue gains a request or capacity is freed: fastest-first (shortest reference step time, index order among equals), lowest-index, round-robin")
@@ -2616,6 +2618,7 @@ var runCmd = &cobra.Command{
 			SharedQueueWakeRule:             wakeRule,         // ours
 			FluidParams:                     loadFluidParams(fluidConfigPath), // ours
 			FluidEtaScale:                   fluidEtaScale,                    // ours
+			FluidMode:                       fluidMode,                        // ours
 			FluidKScale:                     fluidKScale,                      // ours
 			FluidWeights:                    fluidWeights,                     // ours
 			SnapshotRefreshInterval:         snapshotRefreshInterval,

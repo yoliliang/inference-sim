@@ -301,6 +301,7 @@ def main():
     if a.seeds_from_n:
         n_from, k = a.seeds_from_n.split(":")
         seed_cut = (int(n_from), int(k))
+    prev_fluid = None
     for n_inst, rate, rtag in points:
         spec = os.path.join(exp, "specs", f"{rtag}.yaml")
         write_spec(a.spec, spec, rate, 0 if fixed else a.num_requests)
@@ -320,14 +321,16 @@ def main():
             fluid_yaml = os.path.join(exp, "specs", f"fluid_{rtag}.yaml")
             if not (a.resume and os.path.exists(fluid_yaml)):
                 t0 = time.time()
+                start = ["--start", prev_fluid] if scaling and prev_fluid else []
                 subprocess.run([sys.executable, os.path.join(HERE, "fluid", "solve.py"), "--rate", str(rate),
                                 "--instances", inst, "--blocks", str(a.blocks), "--spec", a.spec,
-                                "--time-limit", str(a.fluid_time_limit), "--out", fluid_yaml, "--quiet"],
+                                "--time-limit", str(a.fluid_time_limit), "--out", fluid_yaml, "--quiet", *start],
                                check=True, env={**os.environ, "FLUID_GAP": str(a.fluid_gap)})
                 fm = yaml.safe_load(open(fluid_yaml))["meta"]
                 print(f"fluid solve {rtag}: {time.time() - t0:.0f} s, V* {fm['value']:.3f}, gap {fm['gap']}, "
                       f"{fm['status']}, KKT residual {fm['kkt_residual']:.1e}", flush=True)
             pool_flags += ["--fluid-config", fluid_yaml]
+            prev_fluid = fluid_yaml
         point_seeds = seeds[:seed_cut[1]] if seed_cut and n_inst >= seed_cut[0] else seeds
         for seed in point_seeds:
             tag = f"{rtag}_s{seed}"
