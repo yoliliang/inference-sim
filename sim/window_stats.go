@@ -56,6 +56,9 @@ type WindowStats struct {
 	Types    map[string]*WindowTypeStats `json:"types"`
 	GPUs     map[string]*WindowTypeStats `json:"gpus,omitempty"`     // by GPU type of the handling instance (requests taken by an instance only)
 	GPUInfo  map[string]GPUInfo          `json:"gpu_info,omitempty"` // instance counts and cost per GPU type
+	// Dispatch counts window arrivals by the instance that took them and their type
+	// (instance -> type -> count); divided by the window length it estimates x_ij.
+	Dispatch map[string]map[string]int `json:"dispatch,omitempty"`
 }
 
 func quantiles(v []float64) Quantiles {
@@ -88,6 +91,7 @@ type windowAcc struct {
 	gpus     map[string]*WindowTypeStats
 	gpuLat   map[string][3][]float64
 	gpuOf    func(rm RequestMetrics) string // "" = not attributed to a GPU (shared-queue residents, rejections)
+	dispatch map[string]map[string]int      // instance -> type -> window arrivals taken
 	horizonS float64                        // needed only for unfinished rows (censored time)
 	startS   float64                        // window bounds for the time-average statistics
 	endS     float64
@@ -108,6 +112,15 @@ func getStats(m map[string]*WindowTypeStats, t string) *WindowTypeStats {
 func (a *windowAcc) get(t string) *WindowTypeStats { return getStats(a.types, t) }
 
 func (a *windowAcc) add(rm RequestMetrics, ttft, e2e, wait float64, completed, rejected bool) {
+	if !rejected && rm.HandledBy != "" {
+		if a.dispatch == nil {
+			a.dispatch = map[string]map[string]int{}
+		}
+		if a.dispatch[rm.HandledBy] == nil {
+			a.dispatch[rm.HandledBy] = map[string]int{}
+		}
+		a.dispatch[rm.HandledBy][rm.TenantID]++
+	}
 	for _, t := range []string{rm.TenantID, "all"} {
 		a.addTo(a.types, a.lat, t, rm, ttft, e2e, wait, completed, rejected)
 	}
@@ -184,6 +197,17 @@ func (a *windowAcc) merge(o *windowAcc) {
 	}
 	mergeStats(a.types, a.lat, o.types, o.lat)
 	mergeStats(a.gpus, a.gpuLat, o.gpus, o.gpuLat)
+	for inst, byType := range o.dispatch { // integer counts: order does not matter
+		if a.dispatch == nil {
+			a.dispatch = map[string]map[string]int{}
+		}
+		if a.dispatch[inst] == nil {
+			a.dispatch[inst] = map[string]int{}
+		}
+		for t, n := range byType {
+			a.dispatch[inst][t] += n
+		}
+	}
 }
 
 func mergeStats(stats map[string]*WindowTypeStats, lats map[string][3][]float64,
@@ -226,7 +250,7 @@ func (a *windowAcc) finish(startS, endS float64) *WindowStats {
 		l := a.gpuLat[g]
 		s.TTFT, s.E2E, s.Wait = quantiles(l[0]), quantiles(l[1]), quantiles(l[2])
 	}
-	out := &WindowStats{StartS: startS, EndS: endS, HorizonS: a.horizonS, Types: a.types}
+	out := &WindowStats{StartS: startS, EndS: endS, HorizonS: a.horizonS, Types: a.types, Dispatch: a.dispatch}
 	if len(a.gpus) > 0 {
 		out.GPUs = a.gpus
 	}

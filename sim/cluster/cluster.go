@@ -293,7 +293,8 @@ func NewClusterSimulator(config DeploymentConfig, requestSource RequestSource, o
 		if config.FluidParams == nil {
 			panic("fluid-dual admission needs DeploymentConfig.FluidParams")
 		}
-		admissionPolicy = sim.NewFluidDual(config.FluidParams, config.FluidEtaScale)
+		admissionPolicy = sim.NewFluidDual(config.FluidParams, sim.FluidDualOptions{
+			EtaScale: config.FluidEtaScale, KScale: config.FluidKScale, Weights: config.FluidWeights})
 	case "mooncake": // ours
 		admissionPolicy = sim.NewMooncakeAdmission(config.MooncakeMode, config.MooncakeTTFTTargetS,
 			config.MooncakeTBTTargetMs, config.MooncakeTheta, config.MooncakeDecodeDurationS, config.MaxNumBatchedTokens)
@@ -1905,6 +1906,9 @@ func (c *ClusterSimulator) aggregateMetrics() *sim.Metrics {
 	}
 	merged.GPUByInstance = make(map[string]string, len(c.instances)) // ours: per-GPU window statistics
 	merged.GPUInfo = make(map[string]sim.GPUInfo)
+	if fd, ok := c.admissionPolicy.(*sim.FluidDual); ok { // ours
+		merged.FluidDual = fd.Report()
+	}
 	for _, inst := range c.instances {
 		if inst.HasSim() {
 			merged.GPUByInstance[string(inst.ID())] = inst.GPU()

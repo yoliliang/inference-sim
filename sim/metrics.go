@@ -64,6 +64,7 @@ type Metrics struct {
 	// cost per GPU type, set by the cluster for the per-GPU window statistics.
 	GPUByInstance map[string]string
 	GPUInfo       map[string]GPUInfo
+	FluidDual     *FluidDualReport // ours: set by the cluster when the fluid-dual policy runs
 	// ours: steady-state window configuration for the file-only window block. WindowEndS
 	// 0 = no block. DropPerRequest omits the per-request array from the file.
 	WindowStartS   float64
@@ -312,6 +313,7 @@ func (m *Metrics) EmitOutput(output MetricsOutput, outputFilePath string) error 
 		output.CacheHitRate = &hitRate
 
 		// ours: steady-state window block computed in memory (see window_stats.go)
+		output.FluidDual = m.FluidDual // ours
 		if m.WindowEndS > 0 {
 			output.Window = m.WindowStats(m.WindowStartS, m.WindowEndS, m.HorizonS)
 		}

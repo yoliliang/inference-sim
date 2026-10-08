@@ -127,6 +127,8 @@ type DeploymentConfig struct {
 	// of ours/fluid/solve.py, FluidEtaScale the multiplier of eta0 = V*/J.
 	FluidParams   *sim.FluidDualParams
 	FluidEtaScale float64
+	FluidKScale   float64 // k_ij = FluidKScale * lambda_i / r_i
+	FluidWeights  string  // projection weights: inverse-rate (default) or uniform
 
 	// ours: Mooncake admission parameters. Only used when AdmissionPolicy = "mooncake".
 	MooncakeMode            string  // "now" (Early Rejection) or "predict" (Early Rejection based on Prediction)

@@ -35,6 +35,8 @@ import subprocess
 import sys
 import time
 
+import yaml
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 BIN = os.environ.get("BLIS_BIN") or os.path.join(ROOT, "blis.exe" if os.name == "nt" else "blis")
@@ -119,6 +121,11 @@ PROFILES = {
               "--snapshot-refresh-interval", "50000", *ENGINE_H100],
     "oracle": ["--shared-queue-push=false", "--routing-policy", "weighted", "--routing-scorers", LLMD_SCORERS,
                "--snapshot-refresh-interval", "0", *ENGINE_H100],
+    # fluid-dual policy of the model draft (Section 4, Definition 1): admission and routing at
+    # arrival from the fluid solution, solved for every (n, rate) point before the runs
+    # (ours/fluid/solve.py); push path, engine and eviction as in B1
+    "fluid_dual": ["--shared-queue-push=false", "--routing-policy", "fluid-dual",
+                   *with_admission(ENGINE_H100, "fluid-dual")],
     "harness": ["--shared-queue-push=false", "--routing-policy", "weighted",
                 "--routing-scorers", "queue-depth:1,kv-utilization:1",
                 "--snapshot-refresh-interval", "0"],
@@ -207,6 +214,10 @@ def main():
     ap.add_argument("--keep-paths", choices=["none", "first", "all"], default="none",
                     help="write the per-request array (path data) for no seed, the first seed of each point, or all seeds; "
                          "statistics come from the window block either way")
+    ap.add_argument("--fluid-gap", type=float, default=1e-4,
+                    help="fluid_dual profile: relative optimality gap of the global fluid solve")
+    ap.add_argument("--fluid-time-limit", type=float, default=600,
+                    help="fluid_dual profile: time limit of one fluid solve, seconds")
     ap.add_argument("--profile", choices=sorted(PROFILES), default="B1",
                     help="configuration profile, see PROFILES (default B1, llm-d production default)")
     ap.add_argument("--spec", default=os.path.join(HERE, "specs", "types3.yaml"))
@@ -260,6 +271,7 @@ def main():
         "state_sample_ms": a.state_sample_ms, "state_snapshot_s": a.state_snapshot_s,
         "keep_paths": a.keep_paths, "seeds_from_n": a.seeds_from_n,
         "blocks": a.blocks, "profile": a.profile, "pools": a.pools,
+        "fluid_gap": a.fluid_gap if a.profile.startswith("fluid") else None,
         "base_flags": BASE_FLAGS + PROFILES[a.profile] + mode_flags,
         "extra_flags": a.extra,
         "rates": rates, "seeds": seeds, "spec_template": a.spec,
@@ -297,6 +309,25 @@ def main():
             pools_yaml = os.path.join(exp, "specs", f"pools_n{n_inst}.yaml")
             write_pools(pools_yaml, parse_pools(a.pools), n_inst, a.blocks)
             pool_flags = ["--policy-config", pools_yaml]
+        if a.profile.startswith("fluid"):
+            # instance list in index order: the pools in the order given, else n H100s
+            if a.pools:
+                pools = parse_pools(a.pools)
+                tot = sum(s for _, s in pools)
+                inst = ",".join(f"{g}:{n_inst * s // tot}" for g, s in pools)
+            else:
+                inst = f"H100:{n_inst}"
+            fluid_yaml = os.path.join(exp, "specs", f"fluid_{rtag}.yaml")
+            if not (a.resume and os.path.exists(fluid_yaml)):
+                t0 = time.time()
+                subprocess.run([sys.executable, os.path.join(HERE, "fluid", "solve.py"), "--rate", str(rate),
+                                "--instances", inst, "--blocks", str(a.blocks), "--spec", a.spec,
+                                "--time-limit", str(a.fluid_time_limit), "--out", fluid_yaml, "--quiet"],
+                               check=True, env={**os.environ, "FLUID_GAP": str(a.fluid_gap)})
+                fm = yaml.safe_load(open(fluid_yaml))["meta"]
+                print(f"fluid solve {rtag}: {time.time() - t0:.0f} s, V* {fm['value']:.3f}, gap {fm['gap']}, "
+                      f"{fm['status']}, KKT residual {fm['kkt_residual']:.1e}", flush=True)
+            pool_flags += ["--fluid-config", fluid_yaml]
         point_seeds = seeds[:seed_cut[1]] if seed_cut and n_inst >= seed_cut[0] else seeds
         for seed in point_seeds:
             tag = f"{rtag}_s{seed}"

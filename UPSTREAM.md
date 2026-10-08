@@ -73,6 +73,7 @@ Branch: ours
 - sim/window_stats.go (second item), sim/metrics_lean.go, sim/metrics.go (fifth item): window statistics also per GPU type of the handling instance (gpus, gpu_info); sim/cluster/cluster.go: GPUByInstance / GPUInfo in aggregateMetrics, lean accumulators tagged with the instance GPU; sim/progress_hook.go, cmd/state_sample.go: gpu column
 - sim/window_stats.go (third item), sim/metrics_lean.go: time-average sums of the draft objective (10) over the window (ta_completed, ta_sum_input_tokens, ta_sum_output_tokens, ta_time_in_system_s), fed by every accepted job
 - sim/simulator.go (eighth item), sim/event.go: stage-0 bookkeeping (TrackStage0, Stage0PromptTokens, KVTokensInUse), off unless the fluid-dual policy turns it on
+- sim/window_stats.go (fourth item): dispatch counts per instance and type in the window block; sim/metrics.go, sim/metrics_utils.go: file-only fluid_dual diagnostics block
 - sim/bundle.go, sim/admission.go: fluid-dual registered as admission and routing policy; sim/cluster/cluster.go, deployment.go: fluid-dual wiring (one object for admission and routing, live state reader); cmd/root.go: --fluid-config, --fluid-eta-scale
 - sim/shared_queue.go: SharedQueueAccess.Fits, ReferenceStepTime; sim/batch_formation.go: BatchContext.Instance (InstanceInfo); sim/batch_formation_pooled.go: skips candidates that never fit the instance; sim/simulator.go (seventh item): CanServe, instanceID, BatchContext.Instance
 
