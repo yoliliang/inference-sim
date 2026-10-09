@@ -90,15 +90,24 @@ def plot_line(ax, d, key, col, t="all", src="summary", scale=1.0, label=True):
 
 
 def revenue_figure(data, out):
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4.2), dpi=150)
-    for ax, load in zip(axes, ("under", "over")):
+    """Top row: revenue value per second against n. Bottom row: the same divided by n."""
+    fig, axes = plt.subplots(2, 2, figsize=(11, 8.2), dpi=150)
+    for c, load in enumerate(("under", "over")):
         b1, fd = data[load]["B1"], data[load]["FD"]
-        plot_line(ax, b1, "B1", "value_per_s", src="objective")
-        plot_line(ax, fd, "FD", "value_per_s", src="objective")
         fl = fd["fluid"]
-        ax.plot(fl.n, fl.value, ls="--", color="black", lw=1.2, label="fluid optimum V*")
-        style(ax, "revenue value per second", data[load]["title"])
-        ax.legend(frameon=False, fontsize=8)
+        for r, per in enumerate((False, True)):
+            ax = axes[r, c]
+            for key, d in (("B1", b1), ("FD", fd)):
+                x, y, e = series(d, "value_per_s", "all", "objective")
+                k = x if per else np.ones_like(x)
+                name, color = POL[key]
+                ax.plot(x, y / k, marker="o", ms=4, lw=1.6, color=color, label=name)
+                ax.fill_between(x, (y - e) / k, (y + e) / k, color=color, alpha=0.2, linewidth=0)
+            ax.plot(fl.n, fl.value / (fl.n if per else 1), ls="--", color="black", lw=1.2, label="fluid optimum V*")
+            style(ax, "revenue value per second per instance" if per else "revenue value per second",
+                  data[load]["title"] if r == 0 else None)
+            if c == 0:
+                ax.legend(frameon=False, fontsize=8)
     fig.tight_layout()
     fig.savefig(out)
     plt.close(fig)
@@ -283,7 +292,7 @@ def main():
     tex.append("Fluid-dual inputs, computed before each run for the given n and arrival rate: the global optimum $x^\\star$ of the fluid problem (28), solved with Gurobi (spatial branch and bound, target gap 0.01 percent, time limit 600 s, started from the replicated solution of the next smaller n); the multipliers $\\nu^\\star, \\gamma^{M\\star}, \\gamma^{B\\star}$ from the KKT conditions (31) at $x^\\star$; the marginal congestion costs $c^\\star_{ij}$ (30); the fluid levels $K^\\star_j$ and $S^\\star_j$ (29); $\\eta = V^\\star/J$. The round-time constants of eq. (2) are fitted to BLIS's step-time function (H100: $\\tau_0$ = 12.1 ms, $\\tau_p$ = 4.4 $\\mu$s per prompt token, $\\tau_{kv}$ = 98 ns per cached token, $R^2$ above 0.9999). The job-type constants (22) use BLIS's actual output-length distribution.")
     tex.append(fluid_table(data))
     tex.append(r"\section{Revenue against the system scale}")
-    tex.append("\\begin{figure}[H]\\centering\\includegraphics[width=\\textwidth]{revenue_vs_scale.png}\\caption{Revenue value per second against the system scale n, left underloaded, right overloaded. Dashed: the fluid optimum $V^\\star$ of problem (28).}\\end{figure}")
+    tex.append("\\begin{figure}[H]\\centering\\includegraphics[width=\\textwidth]{revenue_vs_scale.png}\\caption{Top: revenue value per second against the system scale n, left underloaded, right overloaded. Bottom: the same divided by n (revenue per second per instance), which makes small differences visible. Dashed: the fluid optimum $V^\\star$ of problem (28). Bands: 95 percent intervals over seeds.}\\end{figure}")
     tex.append("\\begin{figure}[H]\\centering\\includegraphics[width=\\textwidth]{revenue_by_type.png}\\caption{Revenue value per second by job type.}\\end{figure}")
     tex.append(r"\section{Latency}")
     tex.append("\\begin{figure}[H]\\centering\\includegraphics[width=\\textwidth]{latency_vs_scale.png}\\caption{Mean end-to-end latency, mean TTFT and p99 TTFT (log scale) against n, all job types.}\\end{figure}")
