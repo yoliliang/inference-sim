@@ -29,7 +29,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-POL = {"B1": ("B1 (llm-d default)", "#4C72B0"), "FD": ("fluid-dual", "#DD8452")}
+POL = {"B1": ("B1 (llm-d default)", "#4C72B0"), "B2": ("B2 (B1 + GAIE admission)", "#55A868"),
+       "FD": ("fluid-dual", "#DD8452")}
+
+
+def keys(data, load):
+    return [k for k in POL if k in data[load]]
 TYPES = ["type1", "type2", "type3"]
 TYPE_WORDS = {"type1": "type1 (short chat)", "type2": "type2 (RAG)", "type3": "type3 (long generation)", "all": "all types"}
 
@@ -97,7 +102,8 @@ def revenue_figure(data, out):
         fl = fd["fluid"]
         for r, per in enumerate((False, True)):
             ax = axes[r, c]
-            for key, d in (("B1", b1), ("FD", fd)):
+            for key in keys(data, load):
+                d = data[load][key]
                 x, y, e = series(d, "value_per_s", "all", "objective")
                 k = x if per else np.ones_like(x)
                 name, color = POL[key]
@@ -119,7 +125,7 @@ def grid_figure(data, metrics, out):
     for r, (col, label, scale, logy) in enumerate(metrics):
         for c, load in enumerate(("under", "over")):
             ax = axes[r, c]
-            for key in ("B1", "FD"):
+            for key in keys(data, load):
                 plot_line(ax, data[load][key], key, col, scale=scale)
             style(ax, label, data[load]["title"] if r == 0 else None, logy)
             if r == 0 and c == 0:
@@ -135,7 +141,7 @@ def type_figure(data, col, label, scale, out, src="summary"):
     for r, t in enumerate(TYPES):
         for c, load in enumerate(("under", "over")):
             ax = axes[r, c]
-            for key in ("B1", "FD"):
+            for key in keys(data, load):
                 plot_line(ax, data[load][key], key, col, t=t, src=src, scale=scale)
             style(ax, f"{label}, {t}", data[load]["title"] if r == 0 else None)
             if r == 0 and c == 0:
@@ -159,7 +165,8 @@ def results_table(data, load):
     rows = []
     head = (r"n & policy & revenue/s & E2E mean (s) & TTFT mean (s) & TTFT p99 (s) & rejected \% & unfinished \% & preempt./arrival \\")
     for n in sorted(set(b1["summary"].n)):
-        for key, d in (("B1", b1), ("FD", fd)):
+        for key in keys(data, load):
+            d = data[load][key]
             s = d["summary"][(d["summary"].n == n) & (d["summary"]["type"] == "all")]
             o = d["objective"][(d["objective"].n == n) & (d["objective"]["type"] == "all")]
             if s.empty or o.empty:
@@ -181,7 +188,9 @@ def results_table(data, load):
 
 def type_table(data, load):
     rows = []
-    head = r"n & type & B1 revenue/s & FD revenue/s & B1 rejected \% & FD rejected \% & fluid admits \% & B1 E2E (s) & FD E2E (s) \\"
+    ks = keys(data, load)
+    head = ("n & type & " + " & ".join(f"{k} revenue/s" for k in ks) + " & "
+            + " & ".join(f"{k} rejected " + "\\%" for k in ks) + " & fluid admits \\% \\\\")
     b1, fd = data[load]["B1"], data[load]["FD"]
     for n in sorted(set(b1["summary"].n)):
         for t in TYPES:
@@ -190,14 +199,11 @@ def type_table(data, load):
                 fl = fd["fluid"][fd["fluid"].n == n][f"adm_{t}"].iloc[0]
             except (IndexError, KeyError):
                 fl = float("nan")
-            rows.append(" & ".join([str(int(n)), t,
-                                    fmt(g(b1, "objective", "value_per_s_mean")), fmt(g(fd, "objective", "value_per_s_mean")),
-                                    fmt(100 * g(b1, "summary", "rejected_frac_mean"), None, 2),
-                                    fmt(100 * g(fd, "summary", "rejected_frac_mean"), None, 2),
-                                    fmt(100 * fl, None, 1),
-                                    fmt(g(b1, "summary", "e2e_mean_ms_mean") / 1000, None, 2),
-                                    fmt(g(fd, "summary", "e2e_mean_ms_mean") / 1000, None, 2)]) + r" \\")
-    return ("\\begin{center}\\scriptsize\\begin{tabular}{rlrrrrrrr}\\toprule\n" + head + "\\midrule\n"
+            rows.append(" & ".join([str(int(n)), t]
+                                   + [fmt(g(data[load][k], "objective", "value_per_s_mean")) for k in ks]
+                                   + [fmt(100 * g(data[load][k], "summary", "rejected_frac_mean"), None, 2) for k in ks]
+                                   + [fmt(100 * fl, None, 1)]) + r" \\")
+    return ("\\begin{center}\\scriptsize\\begin{tabular}{rl" + "r" * (2 * len(ks) + 1) + "}\\toprule\n" + head + "\\midrule\n"
             + "\n".join(rows) + "\n\\bottomrule\\end{tabular}\\end{center}")
 
 
@@ -215,14 +221,14 @@ def fluid_table(data):
 
 
 STRATEGY = r"""
-\begin{center}\small
-\begin{tabular}{p{2.2cm}p{6.3cm}p{6.3cm}}\toprule
-Decision & B1 (llm-d production default) & Fluid-dual (model draft, Definition 1) \\\midrule
-Admission & Every arrival is admitted. & At the arrival of a type-$i$ job compute, for every instance $j$, the index $I_{ij}(t) = r_i - c^\star_{ij} - \gamma^M_j(t)\,a^M_{ij} - \gamma^B_j(t)\,a^B_{ij}$. Accept iff $\max_j I_{ij}(t) \ge 0$; otherwise reject (the job is lost, earns nothing and costs nothing). \\
-Routing & Immediately at arrival, to the instance with the highest weighted score of three llm-d scorers (precise prefix cache 2, queue depth 1, KV utilisation 1) computed on instance snapshots refreshed every 50 ms. & Immediately at acceptance, to an instance with the largest index $I_{ij}(t)$, ties to the smallest instance index. Prices use live state: $\gamma^M_j(t) = [\gamma^{M\star}_j + \eta (K_j(t) - K^\star_j)/M_j]^+$ with $K_j(t)$ the KV memory in use, and $\gamma^B_j(t) = [\gamma^{B\star}_j + \eta (S_j(t) - S^\star_j)/b_j]^+$ with $S_j(t)$ the prompt tokens of the stage-0 jobs assigned to $j$ (waiting, mid-prefill, evicted, or in the API delay after routing). \\
-Batching & vLLM continuous batching at every step: every running job continues (one decode token, or the next prefill chunk); then waiting jobs join in arrival order while the per-step token budget (8,192), the request limit (1,024) and free KV allow; chunked prefill; head-of-line stop; no admission in a step that evicted. & Identical to B1 (Definition 1, part 2, is vLLM's rule: every prefilled job, then stage-0 jobs in arrival order while the token budget and memory hold). \\
-Eviction & When the running jobs need more KV than is free, the most recently started job is evicted (recompute: its KV is freed and it restarts from its prompt on the same instance). & Identical to B1 (Definition 1, part 3: evict prefilled jobs, the most recently prefilled first). \\
-Pool & None: every admitted job is routed at once (push). & None: the pool stays empty under this policy (push). \\\bottomrule
+\begin{center}\footnotesize
+\begin{tabular}{p{1.5cm}p{3.6cm}p{3.9cm}p{5.6cm}}\toprule
+Decision & B1 (llm-d production default) & B2 (B1 with llm-d / GAIE saturation admission) & Fluid-dual (model draft, Definition 1) \\\midrule
+Admission & Every arrival is admitted. & Every job type is marked sheddable. An arrival is rejected while the pool is saturated, that is while the average over instances of $\max(q_j/5,\ u_j/0.8)$ is at least 1, with $q_j$ the waiting jobs and $u_j$ the KV utilisation of instance $j$ on the 50 ms snapshots (llm-d default thresholds); otherwise admitted. Blind to the job type. & At the arrival of a type-$i$ job compute, for every instance $j$, the index $I_{ij}(t) = r_i - c^\star_{ij} - \gamma^M_j(t)\,a^M_{ij} - \gamma^B_j(t)\,a^B_{ij}$. Accept iff $\max_j I_{ij}(t) \ge 0$; otherwise reject (the job is lost, earns nothing and costs nothing). \\
+Routing & Immediately at arrival, to the instance with the highest weighted score of three llm-d scorers (precise prefix cache 2, queue depth 1, KV utilisation 1) computed on instance snapshots refreshed every 50 ms. & As B1. & Immediately at acceptance, to an instance with the largest index $I_{ij}(t)$, ties to the smallest instance index. Prices use live state: $\gamma^M_j(t) = [\gamma^{M\star}_j + \eta (K_j(t) - K^\star_j)/M_j]^+$ with $K_j(t)$ the KV memory in use, and $\gamma^B_j(t) = [\gamma^{B\star}_j + \eta (S_j(t) - S^\star_j)/b_j]^+$ with $S_j(t)$ the prompt tokens of the stage-0 jobs assigned to $j$ (waiting, mid-prefill, evicted, or in the API delay after routing). \\
+Batching & vLLM continuous batching at every step: every running job continues (one decode token, or the next prefill chunk); then waiting jobs join in arrival order while the per-step token budget (8,192), the request limit (1,024) and free KV allow; chunked prefill; head-of-line stop; no admission in a step that evicted. & As B1. & Identical to B1 (Definition 1, part 2, is vLLM's rule: every prefilled job, then stage-0 jobs in arrival order while the token budget and memory hold). \\
+Eviction & When the running jobs need more KV than is free, the most recently started job is evicted (recompute: its KV is freed and it restarts from its prompt on the same instance). & As B1. & Identical to B1 (Definition 1, part 3: evict prefilled jobs, the most recently prefilled first). \\
+Pool & None: every admitted job is routed at once (push). & None (push). & None: the pool stays empty under this policy (push). \\\bottomrule
 \end{tabular}
 \end{center}
 """
@@ -235,17 +241,21 @@ def main():
     ap.add_argument("--under-fd", required=True)
     ap.add_argument("--over-b1", required=True)
     ap.add_argument("--over-fd", required=True)
+    ap.add_argument("--under-b2", default="")
+    ap.add_argument("--over-b2", default="")
     ap.add_argument("--rcap", type=float, default=12.0, help="B1 capacity point per instance, req/s")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     data = {}
-    for load, b1p, fdp in (("under", a.under_b1, a.under_fd), ("over", a.over_b1, a.over_fd)):
+    for load, b1p, fdp, b2p in (("under", a.under_b1, a.under_fd, a.under_b2), ("over", a.over_b1, a.over_fd, a.over_b2)):
         b1, fd = load_exp(b1p), load_exp(fdp, fluid=True)
         rpi = b1["manifest"]["rate_per_instance"]
         word = "underloaded" if load == "under" else "overloaded"
         data[load] = {"B1": b1, "FD": fd, "rpi": rpi,
                       "title": f"{word}: {rpi:g} req/s per instance ({rpi / a.rcap:.2f} R_cap)",
                       "short": f"{word} ({rpi:g})"}
+        if b2p:
+            data[load]["B2"] = load_exp(b2p)
     figs = {
         "revenue": os.path.join(a.out, "revenue_vs_scale.png"),
         "latency": os.path.join(a.out, "latency_vs_scale.png"),
@@ -273,7 +283,7 @@ def main():
 \usepackage{graphicx,booktabs,amsmath,float}
 \usepackage[hidelinks]{hyperref}
 \setlength{\parskip}{4pt}\setlength{\parindent}{0pt}
-\title{B1 versus the fluid-dual policy over the system scale}
+\title{Benchmarks B1 and B2 versus the fluid-dual policy over the system scale}
 \author{BLIS fork, branch ours}
 \date{""" + esc(pd.Timestamp.today().date()) + r"""}
 \begin{document}\maketitle
@@ -283,11 +293,11 @@ def main():
                f"\\item System: n identical instances, n = {', '.join(str(x) for x in m['instances'])}; each instance is one H100 GPU serving Qwen3-14B (tensor parallelism 1) with {m['blocks']:,} KV blocks of 16 tokens ({m['blocks']*16:,} tokens), per-step token budget 8,192, request limit 1,024. Step times from BLIS's trained-physics model.\n"
                "\\item Workload: Poisson arrivals, three job types in fixed shares 50 / 35 / 15 percent: type1 prompt 256 tokens, mean output 64; type2 prompt 2,048, mean output 128; type3 prompt 512, mean output 1,024 (output lengths rounded exponential).\n"
                f"\\item Loads: total arrival rate = n times the rate per instance; underloaded {data['under']['rpi']:g} req/s per instance ({data['under']['rpi']/a.rcap:.2f} times B1's capacity point of {a.rcap:g} req/s per instance), overloaded {data['over']['rpi']:g} req/s per instance ({data['over']['rpi']/a.rcap:.2f} times).\n"
-               f"\\item Runs: fixed horizon {m['horizon_s']:g} s, statistics over requests arriving in the window [{m['warmup_s']:g}, {m['horizon_s']-m['tail_s']:g}) s; {len(seeds)} seeds per point" + (f" ({esc(cut.split(':')[1])} seeds for n $\\ge$ {esc(cut.split(':')[0])})" if cut else "") + "; both policies use the same seeds (common random numbers). Bands are 95 percent Student t intervals over seeds.\n"
+               f"\\item Runs: fixed horizon {m['horizon_s']:g} s, statistics over requests arriving in the window [{m['warmup_s']:g}, {m['horizon_s']-m['tail_s']:g}) s; {len(seeds)} seeds per point" + (f" ({esc(cut.split(':')[1])} seeds for n $\\ge$ {esc(cut.split(':')[0])})" if cut else "") + "; all policies use the same seeds (common random numbers). Bands are 95 percent Student t intervals over seeds.\n"
                f"\\item Revenue (model draft, eq. 10): per second of the window, the rewards $(\\pi_{{in}} P + \\pi_{{out}} o)/1000$ of the jobs completing in the window minus $h$ times the time-integral of the number of jobs in the system; $\\pi_{{in}} = {obj['type1']['pi_in']:g}$, $\\pi_{{out}} = {obj['type1']['pi_out']:g}$, $h = {obj['type1']['h']:g}$ per second for every type. Rejected jobs earn and cost nothing.\n"
                "\\item Latencies (E2E, TTFT) are over completed jobs that arrived in the window.\n"
                "\\end{itemize}")
-    tex.append(r"\section{Strategies of the two policies}")
+    tex.append(r"\section{Strategies of the policies}")
     tex.append(STRATEGY)
     tex.append("Fluid-dual inputs, computed before each run for the given n and arrival rate: the global optimum $x^\\star$ of the fluid problem (28), solved with Gurobi (spatial branch and bound, target gap 0.01 percent, time limit 600 s, started from the replicated solution of the next smaller n); the multipliers $\\nu^\\star, \\gamma^{M\\star}, \\gamma^{B\\star}$ from the KKT conditions (31) at $x^\\star$; the marginal congestion costs $c^\\star_{ij}$ (30); the fluid levels $K^\\star_j$ and $S^\\star_j$ (29); $\\eta = V^\\star/J$. The round-time constants of eq. (2) are fitted to BLIS's step-time function (H100: $\\tau_0$ = 12.1 ms, $\\tau_p$ = 4.4 $\\mu$s per prompt token, $\\tau_{kv}$ = 98 ns per cached token, $R^2$ above 0.9999). The job-type constants (22) use BLIS's actual output-length distribution.")
     tex.append(fluid_table(data))
@@ -307,7 +317,7 @@ def main():
     tex.append(r"\section{Artifacts}")
     tex.append("\\begin{itemize}" + "".join(
         f"\\item {esc(data[l]['short'])}, {esc(POL[k][0])}: \\texttt{{{esc(os.path.relpath(data[l][k]['folder'], os.path.dirname(HERE)).replace(os.sep, '/'))}}}"
-        for l in ("under", "over") for k in ("B1", "FD")) + "\\end{itemize}")
+        for l in ("under", "over") for k in keys(data, l)) + "\\end{itemize}")
     tex.append(f"Fork commit: \\texttt{{{esc(m.get('commit', '')[:10])}}}. Generated by ours/report\\_fluid.py.")
     tex.append(r"\end{document}")
     texp = os.path.join(a.out, "report.tex")
