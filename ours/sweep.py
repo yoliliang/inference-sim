@@ -106,6 +106,11 @@ MOONCAKE_PARAMS = ["--mooncake-ttft-target", "2", "--mooncake-tbt-target", "60",
 PROFILES = {
     "B1": ["--shared-queue-push=false", "--routing-policy", "weighted", "--routing-scorers", LLMD_SCORERS,
            "--snapshot-refresh-interval", "50000", *ENGINE_H100],
+    # B2: B1 plus llm-d / GAIE legacy saturation-based admission (gaie-legacy, default thresholds:
+    # queue depth 5, KV utilisation 0.8); run with --spec ours/specs/types3_sheddable.yaml so that
+    # every type is sheddable (otherwise gaie-legacy admits everything and B2 = B1)
+    "B2": ["--shared-queue-push=false", "--routing-policy", "weighted", "--routing-scorers", LLMD_SCORERS,
+           "--snapshot-refresh-interval", "50000", *with_admission(ENGINE_H100, "gaie-legacy")],
     "B1_srf": ["--shared-queue-push=false", "--routing-policy", "weighted", "--routing-scorers", LLMD_SCORERS,
                "--snapshot-refresh-interval", "50000", *with_preemption(ENGINE_H100, "srf")],
     "C": [*ENGINE_H100],  # the default control structure with the B1 engine and prices
@@ -231,6 +236,8 @@ def main():
                     help="skip runs whose .json.gz already exists (keeps the existing manifest)")
     ap.add_argument("extra", nargs="*", help="extra BLIS flags after --")
     a = ap.parse_args()
+    if a.profile == "B2" and "sheddable" not in os.path.basename(a.spec):
+        sys.exit("profile B2 needs a workload spec whose types are sheddable, e.g. --spec ours/specs/types3_sheddable.yaml")
 
     instances = [int(x) for x in a.instances.split(",")]
     seeds = [int(x) for x in a.seeds.split(",")]
