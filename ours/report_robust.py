@@ -132,10 +132,8 @@ def collect_exp1(date):
                             "FD_seeds": f.seeds, "B2_seeds": b.seeds})
     df = pd.DataFrame(res)
     if len(df):
-        df["bound"] = df.bound.fillna(df.V).clip(lower=df.V)
         for k in ("FD", "B2"):
-            df[f"{k}_gap"] = 100 * (df.V - df[k]) / df.V          # against the best fluid solution found
-            df[f"{k}_gap_ub"] = 100 * (df.bound - df[k]) / df.bound  # against the solver's proven upper bound
+            df[f"{k}_gap"] = 100 * (df.V - df[k]) / df.V
         df["adv"] = 100 * (df.FD - df.B2) / df.V
     return df, missing
 
@@ -161,10 +159,8 @@ def collect_exp2(date):
                      "FD_ttft": f.ttft_mean_ms_mean, "B2_ttft": b.ttft_mean_ms_mean,
                      "FD_e2e": f.e2e_mean_ms_mean, "B2_e2e": b.e2e_mean_ms_mean})
     df = pd.DataFrame(rows)
-    df["bound"] = df.bound.fillna(df.V).clip(lower=df.V)
     for k in ("FD", "B2"):
         df[f"{k}_gap"] = 100 * (df.V - df[k]) / df.V
-        df[f"{k}_gap_ub"] = 100 * (df.bound - df[k]) / df.bound
         df[f"{k}_gap_ci"] = 100 * df[f"{k}_ci"] / df.V
     return df, []
 
@@ -196,8 +192,7 @@ def fig_instances(df, insts, out):
                 y, e = g[k] / g.n, g[f"{k}_ci"].fillna(0) / g.n
                 ax.plot(g.n, y, marker="o", ms=3.5, lw=1.5, color=COL[k], label=NAME[k])
                 ax.fill_between(g.n, y - e, y + e, color=COL[k], alpha=0.2, lw=0)
-            ax.plot(g.n, g.V / g.n, ls="--", color="black", lw=1.1, label="fluid optimum V* (best found)")
-            ax.fill_between(g.n, g.V / g.n, g.bound / g.n, color="black", alpha=0.12, lw=0, label="up to the solver's upper bound")
+            ax.plot(g.n, g.V / g.n, ls="--", color="black", lw=1.1, label="fluid optimum V*")
             xstyle(ax, list(g.n))
             ax.set_ylabel("revenue / s / instance")
             ax.set_title(f"{inst['label']}, {'underloaded' if load == 'under' else 'overloaded'} ({g.rate.iloc[0]:g} req/s per instance)", fontsize=9)
@@ -224,16 +219,13 @@ def fig_gaps(df, insts, out):
                 if what == "gap":
                     ax.plot(g.n, g.FD_gap, marker="o", ms=3, lw=1.5, color=cmap(q), label=labels[k])
                     ax.plot(g.n, g.B2_gap, marker="s", ms=3, lw=1.0, ls="--", color=cmap(q))
-                    ax.fill_between(g.n, g.FD_gap, g.FD_gap_ub, color=cmap(q), alpha=0.18, lw=0)
-                    ax.fill_between(g.n, g.B2_gap, g.B2_gap_ub, color=cmap(q), alpha=0.08, lw=0)
                 else:
                     ax.plot(g.n, g.adv, marker="o", ms=3, lw=1.5, color=cmap(q), label=labels[k])
             ax.axhline(0, color="grey", lw=0.8)
             xstyle(ax, sorted(set(df.n)))
             ax.set_ylabel(ylabel)
             ax.set_title(("underloaded" if load == "under" else "overloaded")
-                         + (": solid fluid-dual, dashed B2; shaded up to the loss against the solver bound" if what == "gap" else ""),
-                         fontsize=9)
+                         + (": solid fluid-dual, dashed B2" if what == "gap" else ""), fontsize=10)
             if c == 0:
                 ax.legend(frameon=False, fontsize=7)
     fig.tight_layout()
@@ -248,15 +240,13 @@ def fig_exp2(d2, out):
     for k in ("B2", "FD"):
         ax.plot(x, d2[f"{k}_gap"], marker="o", ms=4, lw=1.6, color=COL[k], label=NAME[k])
         ax.fill_between(x, d2[f"{k}_gap"] - d2[f"{k}_gap_ci"], d2[f"{k}_gap"] + d2[f"{k}_gap_ci"], color=COL[k], alpha=0.2, lw=0)
-        ax.plot(x, d2[f"{k}_gap_ub"], lw=0.9, ls=":", color=COL[k], label=f"{NAME[k]}, against the solver bound")
     ax.axhline(0, color="grey", lw=0.8)
     ax.set_ylabel("loss to the fluid optimum, percent of V*")
     ax.set_title("relative gap to optimality", fontsize=10)
     ax = axes[0, 1]
     for k in ("B2", "FD"):
         ax.plot(x, d2[k], marker="o", ms=4, lw=1.6, color=COL[k], label=NAME[k])
-    ax.plot(x, d2.V, ls="--", color="black", lw=1.1, label="fluid optimum V* (best found)")
-    ax.fill_between(x, d2.V, d2.bound, color="black", alpha=0.12, lw=0, label="up to the solver's upper bound")
+    ax.plot(x, d2.V, ls="--", color="black", lw=1.1, label="fluid optimum V*")
     ax.set_ylabel("revenue value per second")
     ax.set_title("revenue", fontsize=10)
     ax = axes[1, 0]
@@ -295,25 +285,22 @@ def table_exp1(df, insts):
             continue
         rows = []
         for _, r in g.sort_values(["load", "n"], ascending=[False, True]).iterrows():
-            rows.append(" & ".join(["under" if r.load == "under" else "over", str(int(r.n)), f1(r.V), f1(r.bound),
-                                    f"{100 * r.solver_gap:.2f}" if r.solver_gap == r.solver_gap else "--",
-                                    f1(r.B2), f1(r.FD),
-                                    f"[{f1(r.B2_gap, 2)}, {f1(r.B2_gap_ub, 2)}]", f"[{f1(r.FD_gap, 2)}, {f1(r.FD_gap_ub, 2)}]",
-                                    f1(r.adv, 2), f1(r.B2_rej, 2), f1(r.FD_rej, 2)]) + r" \\")
+            rows.append(" & ".join(["under" if r.load == "under" else "over", str(int(r.n)), f1(r.V), f1(r.B2), f1(r.FD),
+                                    f1(r.B2_gap, 2), f1(r.FD_gap, 2), f1(r.adv, 2), f1(r.B2_rej, 2), f1(r.FD_rej, 2),
+                                    f"{100 * r.solver_gap:.2f}" if r.solver_gap == r.solver_gap else "--"]) + r" \\")
         out.append(f"\\paragraph{{{esc(inst['label'])}.}} {esc(inst['change'])}.\n"
-                   "\\begin{center}\\scriptsize\\begin{tabular}{lrrrrrrrrrrr}\\toprule\n"
-                   r"load & n & V* & bound & solver gap \% & B2 & fluid-dual & B2 loss \% & FD loss \% & FD $-$ B2, \% of V* & B2 rej. \% & FD rej. \% \\" "\\midrule\n"
+                   "\\begin{center}\\scriptsize\\begin{tabular}{lrrrrrrrrrr}\\toprule\n"
+                   r"load & n & V* & B2 & fluid-dual & B2 loss \% & FD loss \% & FD $-$ B2, \% of V* & B2 rej. \% & FD rej. \% & solver gap \% \\" "\\midrule\n"
                    + "\n".join(rows) + "\n\\bottomrule\\end{tabular}\\end{center}")
     return "\n".join(out)
 
 
 def table_exp2(d2):
-    rows = [" & ".join([f1(r.rpi, 1), f1(r.V), f1(r.bound), f"{100 * r.solver_gap:.2f}", f1(r.B2), f1(r.FD),
-                        f"[{f1(r.B2_gap, 2)}, {f1(r.B2_gap_ub, 2)}]", f"[{f1(r.FD_gap, 2)}, {f1(r.FD_gap_ub, 2)}]",
-                        f1(r.B2_rej, 2), f1(r.FD_rej, 2), f1(r.B2_ttft / 1000, 3), f1(r.FD_ttft / 1000, 3)]) + r" \\"
-            for _, r in d2.iterrows()]
+    rows = [" & ".join([f1(r.rpi, 1), f1(r.rate, 1), f1(r.V), f1(r.B2), f1(r.FD), f1(r.B2_gap, 2), f1(r.FD_gap, 2),
+                        f1(r.B2_rej, 2), f1(r.FD_rej, 2), f1(r.B2_ttft / 1000, 3), f1(r.FD_ttft / 1000, 3),
+                        f"{100 * r.solver_gap:.2f}"]) + r" \\" for _, r in d2.iterrows()]
     return ("\\begin{center}\\scriptsize\\begin{tabular}{rrrrrrrrrrrr}\\toprule\n"
-            r"req/s per inst. & V* & bound & solver gap \% & B2 & fluid-dual & B2 loss \% & FD loss \% & B2 rej. \% & FD rej. \% & B2 TTFT (s) & FD TTFT (s) \\" "\\midrule\n"
+            r"req/s per inst. & total & V* & B2 & fluid-dual & B2 loss \% & FD loss \% & B2 rej. \% & FD rej. \% & B2 TTFT (s) & FD TTFT (s) & solver gap \% \\" "\\midrule\n"
             + "\n".join(rows) + "\n\\bottomrule\\end{tabular}\\end{center}")
 
 
@@ -349,7 +336,7 @@ Two policies, both with llm-d routing replaced or kept as stated, vLLM batching 
 \item \textbf{B2}: B1 (llm-d weighted routing on 50 ms snapshots) plus llm-d / GAIE saturation admission with every type sheddable: an arrival is rejected while the average over instances of $\max(q_j/5, u_j/0.8) \ge 1$ ($q_j$ waiting jobs, $u_j$ KV utilisation).
 \item \textbf{Fluid-dual}: the model draft's Definition 1 (index rule): accept a type-$i$ job iff $\max_j I_{ij}(t) \ge 0$ and route it to the largest index; $\eta = V^\star/J$; the fluid problem (28) is solved with Gurobi for each instance, $n$ and rate.
 \end{itemize}
-Common to all runs: Qwen3-14B, one GPU per instance, per-step token budget 8,192, horizon 1,200 s, statistics over arrivals in [500, 1,100) s, revenue = eq. (10) per second of the window. The fluid problem (28) is solved per instance (index $j$ = instance) by Gurobi's global solver, which stops at a relative gap of 0.01 percent or at a time limit. It then reports two numbers: $V^\star$, the value of the best fluid solution found, and $\bar V$, a proven upper bound on the true fluid optimum; the solver gap is $(\bar V - V^\star)/V^\star$. The true fluid optimum lies in $[V^\star, \bar V]$. Every loss to optimality is therefore reported as a range $[\,100\,(V^\star - V)/V^\star,\; 100\,(\bar V - V)/\bar V\,]$: the first number measures against the best fluid solution found, the second against the bound; figures draw the first as the line and shade up to the second. Where the solver proved optimality the two coincide. A negative loss means the simulated value exceeds $V^\star$, which the fluid model does not rule out.
+Common to all runs: Qwen3-14B, one GPU per instance, per-step token budget 8,192, horizon 1,200 s, statistics over arrivals in [500, 1,100) s, revenue = eq. (10) per second of the window. The loss to optimality is $100\,(V^\star - V)/V^\star$ with $V^\star$ the fluid optimum of that instance (best value found by the solver; the solver gap is listed). A negative loss means the simulated value exceeds $V^\star$, which the fluid model does not rule out.
 \section{Experiment 1: robustness over instances}
 Each instance changes one aspect of the baseline (H100, 6,500 KV blocks, type shares 50/35/15, $\pi_{in} = 1$, $\pi_{out} = 4$, $h = 0.03$). Loads are set at the same fraction of each instance's fluid capacity as the baseline's 11 and 14.4 req/s per instance (0.817 and 1.070 of the H100 fluid capacity of 13.46 req/s): fluid capacity is the largest arrival rate the fluid constraints (27) carry with every job admitted (a linear program, ours/fluid/capacity.py). Price variants keep the baseline rates. $n$ = 2, 4, 8, 16, 32 with 10 seeds for $n \le 8$ and 5 for $n \ge 16$ (baseline: up to 64, 20 and 10 seeds). Fluid solves for these instances have a 150 s time limit.
 """]
