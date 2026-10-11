@@ -293,7 +293,7 @@ def main():
     if a.aggregate:
         import aggregate as agg_mod
         groups = agg_mod.groups_of(gpus)
-        v_agg, Xg, st = agg_mod.solve_aggregate(types, groups, lam, a.blocks, fit, a.budget, a.block_size, name=tag + "_agg")
+        v_agg, Xg, st = agg_mod.solve_aggregate(types, groups, lam, a.blocks, fit, a.budget, a.block_size, name=tag + "_agg", workdir=a.workdir)
         cols, rep_of = [], []
         for k, (g, N) in enumerate(groups):
             rep_of += [len(cols)] * N         # first instance of the type represents it in the KKT LP

@@ -30,7 +30,7 @@ from solve import run_gurobi, term, num, parse_instances  # noqa: E402
 EXP = os.path.join(common.OURS, "experiments")
 
 
-def solve_aggregate(types, groups, lam, blocks, fit, budget=8192, block_size=16, name="agg"):
+def solve_aggregate(types, groups, lam, blocks, fit, budget=8192, block_size=16, name="agg", workdir=None):
     """groups: list of (gpu, N). Returns (value, X (I x G), status)."""
     I, G = len(types), len(groups)
     r = np.array([t["r"] for t in types]); d = np.array([t["d"] for t in types])
@@ -54,7 +54,7 @@ def solve_aggregate(types, groups, lam, blocks, fit, budget=8192, block_size=16,
         bounds += [f" 0 <= x_{i}_{j} <= {num(lam[i])}" for i in range(I)] + [f" 0 <= g_{j} <= {num(U)}"]
     obj = " ".join(term(r[i], f"x_{i}_{j}") for i in range(I) for j in range(G)) + " " + " ".join(f"- 1 g_{j}" for j in range(G))
     lp = "\n".join(["Maximize", " obj: " + obj, "Subject To", *cons, "Bounds", *bounds, "End"]) + "\n"
-    vals, log = run_gurobi(lp, os.path.join(common.HERE, "work"), name,
+    vals, log = run_gurobi(lp, workdir or os.path.join(common.HERE, "work"), name,
                            {"NonConvex": 2, "MIPGap": 1e-9, "MIPGapAbs": 1e-10, "FeasibilityTol": 1e-9, "OptimalityTol": 1e-9})
     X = np.array([[vals.get(f"x_{i}_{j}", 0.0) for j in range(G)] for i in range(I)])
     value = 0.0
