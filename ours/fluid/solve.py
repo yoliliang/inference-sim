@@ -91,10 +91,29 @@ def start_from(path, types, gpus, w, tau0, d):
     first, to satisfy the symmetry-breaking rows. Returns {var: value} or None."""
     old = yaml.safe_load(open(path))
     J0, J = len(old["instances"]), len(gpus)
-    if J % J0 or J <= J0 or len(set(gpus)) != 1 or any(o["gpu"] != gpus[0] for o in old["instances"]):
+    if J % J0 or J <= J0:
         return None
-    cols = [[o["types"][t["name"]]["x"] for t in types] for o in old["instances"]] * (J // J0)
-    cols.sort(key=lambda c: -sum(w[i, 0] * c[i] for i in range(len(types))))
+    k = J // J0
+    # GPU groups must keep their order and grow by the same factor (pools are filled in order)
+    groups = []
+    for g in gpus:
+        if not groups or groups[-1][0] != g:
+            groups.append([g, 0])
+        groups[-1][1] += 1
+    ogroups = []
+    for o in old["instances"]:
+        if not ogroups or ogroups[-1][0] != o["gpu"]:
+            ogroups.append([o["gpu"], 0])
+        ogroups[-1][1] += 1
+    if [g for g, _ in groups] != [g for g, _ in ogroups] or any(c != oc * k for (_, c), (_, oc) in zip(groups, ogroups)):
+        return None
+    cols, pos = [], 0
+    for g, oc in ogroups:
+        jcol = len(cols)
+        block = [[o["types"][t["name"]]["x"] for t in types] for o in old["instances"][pos:pos + oc]] * k
+        block.sort(key=lambda c: -sum(w[i, jcol] * c[i] for i in range(len(types))))
+        cols += block
+        pos += oc
     start = {}
     for j, col in enumerate(cols):
         rho = sum(w[i, j] * col[i] for i in range(len(types)))
@@ -139,7 +158,7 @@ def solve(types, gpus, lam, M, b, fit, time_limit, workdir, name, start_path=Non
         for j in range(J):
             lines.append(f" 0 <= {X(i, j)} <= {num(lam[i])}")
     for j in range(J):
-        lines.append(f" 0 <= g_{j} <= {num(U)}")
+        lines.append(f" 0 <= g_{j} <= {num(U[j])}")
     lines.append("End")
     params = {"NonConvex": 2, "MIPGap": GAP, "MIPGapAbs": 1e-9, "FeasibilityTol": 1e-9,
               "OptimalityTol": 1e-9, "TimeLimit": time_limit, "Threads": 0}
@@ -243,7 +262,7 @@ def main():
     if missing:
         sys.exit(f"no step-time fit for {missing}; run ours/fluid/stepfit.py --gpus {','.join(sorted(set(gpus)))}")
     lam = np.array([a.rate * t["fraction"] for t in types])
-    M = float(a.blocks * a.block_size)
+    M = np.array([float(common.blocks_for(g, a.blocks) * a.block_size) for g in gpus])
     b = float(a.budget)
     tag = os.path.splitext(os.path.basename(a.out))[0]
 
@@ -266,7 +285,7 @@ def main():
             "nu": float(nu[i]), "admitted": float(x[i].sum()),
         } for i, t in enumerate(types)],
         "instances": [{
-            "id": f"instance_{j}", "gpu": gpus[j], "M": M, "b": b,
+            "id": f"instance_{j}", "gpu": gpus[j], "M": float(M[j]), "b": b,
             "tau0": fit[gpus[j]]["tau0"], "taup": fit[gpus[j]]["taup"], "taukv": fit[gpus[j]]["taukv"],
             "rho": float(q["rho"][j]), "ell": float(q["ell"][j]), "holding_rate": float(q["g"][j]),
             "load_memory": float(q["loadM"][j]), "load_tokens": float(q["loadB"][j]),

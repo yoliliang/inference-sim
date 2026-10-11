@@ -42,6 +42,8 @@ ROOT = os.path.dirname(HERE)
 BIN = os.environ.get("BLIS_BIN") or os.path.join(ROOT, "blis.exe" if os.name == "nt" else "blis")
 sys.path.insert(0, HERE)
 import analyze  # noqa: E402
+sys.path.insert(0, os.path.join(HERE, "fluid"))
+import common as fluid_common  # noqa: E402
 
 BASE_FLAGS = [
     "--model", "qwen/qwen3-14b", "--hardware", "H100", "--tp", "1",
@@ -171,8 +173,9 @@ def write_pools(dst, pools, n, blocks):
         if gpu not in hw:
             sys.exit(f"unknown GPU {gpu}; hardware_config.json has {sorted(hw)}")
         k = n * share // total
+        kv = fluid_common.blocks_for(gpu, blocks)  # capped at the GPU's physical capacity
         lines.append(f"  - {{name: {gpu.lower()}, gpu_type: {gpu}, gpus_per_node: 1, gpu_memory_gib: {hw[gpu]['MemoryGiB']:g}, "
-                     f"initial_nodes: {k}, max_nodes: {k}, cost_per_hour: {COST_PER_HOUR.get(gpu, 0.0)}, kv_blocks: {blocks}}}")
+                     f"initial_nodes: {k}, max_nodes: {k}, cost_per_hour: {COST_PER_HOUR.get(gpu, 0.0)}, kv_blocks: {kv}}}")
     lines += ["instance_lifecycle:", "  warm_start_initial_instances: true", ""]
     open(dst, "w", newline="\n").write("\n".join(lines))
 
@@ -219,6 +222,8 @@ def main():
     ap.add_argument("--keep-paths", choices=["none", "first", "all"], default="none",
                     help="write the per-request array (path data) for no seed, the first seed of each point, or all seeds; "
                          "statistics come from the window block either way")
+    ap.add_argument("--objective", default=os.path.join(HERE, "specs", "objective.yaml"),
+                    help="fluid_dual profile: prices and holding costs used by the fluid solve")
     ap.add_argument("--fluid-gap", type=float, default=1e-4,
                     help="fluid_dual profile: relative optimality gap of the global fluid solve")
     ap.add_argument("--fluid-time-limit", type=float, default=600,
@@ -278,7 +283,7 @@ def main():
         "state_sample_ms": a.state_sample_ms, "state_snapshot_s": a.state_snapshot_s,
         "keep_paths": a.keep_paths, "seeds_from_n": a.seeds_from_n,
         "blocks": a.blocks, "profile": a.profile, "pools": a.pools,
-        "fluid_gap": a.fluid_gap if a.profile.startswith("fluid") else None,
+        "fluid_gap": a.fluid_gap if a.profile.startswith("fluid") else None, "objective": a.objective,
         "base_flags": BASE_FLAGS + PROFILES[a.profile] + mode_flags,
         "extra_flags": a.extra,
         "rates": rates, "seeds": seeds, "spec_template": a.spec,
@@ -330,7 +335,7 @@ def main():
                 t0 = time.time()
                 start = ["--start", prev_fluid] if scaling and prev_fluid else []
                 subprocess.run([sys.executable, os.path.join(HERE, "fluid", "solve.py"), "--rate", str(rate),
-                                "--instances", inst, "--blocks", str(a.blocks), "--spec", a.spec,
+                                "--instances", inst, "--blocks", str(a.blocks), "--spec", a.spec, "--objective", a.objective,
                                 "--time-limit", str(a.fluid_time_limit), "--out", fluid_yaml, "--quiet", *start],
                                check=True, env={**os.environ, "FLUID_GAP": str(a.fluid_gap)})
                 fm = yaml.safe_load(open(fluid_yaml))["meta"]

@@ -1,0 +1,14 @@
+# Robustness variant of objective.yaml (2026-10-11): holding cost h = 0.01 per second instead of 0.03
+types:
+  type1:
+    pi_in: 1.0
+    pi_out: 4.0
+    h: 0.01
+  type2:
+    pi_in: 1.0
+    pi_out: 4.0
+    h: 0.01
+  type3:
+    pi_in: 1.0
+    pi_out: 4.0
+    h: 0.01

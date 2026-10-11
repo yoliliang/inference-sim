@@ -30,6 +30,16 @@ OURS = os.path.dirname(HERE)
 ROOT = os.path.dirname(OURS)
 
 
+# Physical KV capacity in 16-token blocks for Qwen3-14B at TP 1 and 0.9 memory utilisation,
+# from BLIS's auto-calculation (sim/latency/kv_capacity.go). A requested block count is capped
+# at this, so that a memory-bound setting (e.g. 6,500 blocks) stays physical on smaller GPUs.
+MAX_BLOCKS = {"H100": 15909, "A100-80": 15909, "A100-SXM": 15909, "L40S": 4113}
+
+
+def blocks_for(gpu, requested):
+    return min(int(requested), MAX_BLOCKS.get(gpu, int(requested)))
+
+
 def survival(dist):
     """S_k = P(o > k) for k = 1 .. K-1 as a numpy array (index 0 is k = 1)."""
     if dist.get("type") != "exponential":

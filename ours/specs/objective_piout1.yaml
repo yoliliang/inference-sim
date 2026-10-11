@@ -1,0 +1,14 @@
+# Robustness variant of objective.yaml (2026-10-11): output tokens priced like input tokens (pi_out = 1 instead of 4)
+types:
+  type1:
+    pi_in: 1.0
+    pi_out: 1.0
+    h: 0.03
+  type2:
+    pi_in: 1.0
+    pi_out: 1.0
+    h: 0.03
+  type3:
+    pi_in: 1.0
+    pi_out: 1.0
+    h: 0.03
