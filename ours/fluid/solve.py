@@ -207,7 +207,7 @@ def fluid_quantities(x, c, M, b):
     return dict(rho=rho, ell=ell, g=g, value=value, cstar=cstar, K=K, W0=W0, S0=S0, loadM=loadM, loadB=loadB)
 
 
-def multipliers(x, c, q, lam, workdir, name):
+def multipliers(x, c, q, lam, workdir, name, rep_of=None):
     """KKT multipliers at x* by least violation. x* comes from a global solve with a finite
     optimality gap, so it satisfies (31) and complementary slackness only approximately;
     hard-zeroing the multipliers of nearly tight constraints can make the system infeasible.
@@ -216,8 +216,13 @@ def multipliers(x, c, q, lam, workdir, name):
     where the stationarity residuals are e+ on r - c* - gamma a - nu <= 0 for every (i, j) and
     e- on the reverse inequality where x*_ij > 0, and slack_k >= 0 is the slack of constraint
     k at x* (relative for the flow rows). The last term picks the smallest capacity prices
-    among exact solutions. The largest residual is reported."""
+    among exact solutions. The largest residual is reported.
+    rep_of[j] (aggregate formulation): the representative column of instance j's GPU type. The
+    instances of a type are identical at the equal split, so their rows coincide; the LP is
+    written for the representatives only (it stays small at any n) and the prices are copied."""
     I, J = x.shape
+    rep_of = list(range(J)) if rep_of is None else list(rep_of)
+    cols = sorted(set(rep_of))
     tol_x = 1e-7 * max(1.0, lam.max())
     s_flow = np.maximum(0.0, lam - x.sum(axis=1)) / np.maximum(lam, 1e-12)
     s_mem = np.maximum(0.0, 1.0 - q["loadM"])
@@ -226,17 +231,17 @@ def multipliers(x, c, q, lam, workdir, name):
     obj = []
     for i in range(I):
         obj.append(term(1e2 * s_flow[i], f"nu_{i}"))
-    for j in range(J):
+    for j in cols:
         obj.append(term(1e2 * s_mem[j] + 1e-3, f"gm_{j}"))
         obj.append(term(1e2 * s_tok[j] + 1e-3, f"gb_{j}"))
     for i in range(I):
-        for j in range(J):
+        for j in cols:
             obj.append(f"+ 10000 ep_{i}_{j}")
             if x[i, j] > tol_x:
                 obj.append(f"+ 10000 em_{i}_{j}")
     lines = ["Minimize", " obj: " + " ".join(obj), "Subject To"]
     for i in range(I):
-        for j in range(J):
+        for j in cols:
             lhs = f"{term(c['aM'][i, j], f'gm_{j}')} {term(c['aB'][i, j], f'gb_{j}')} + 1 nu_{i}"
             lines.append(f" ge_{i}_{j}: {lhs} + 1 ep_{i}_{j} >= {num(rhs[i, j])}")
             if x[i, j] > tol_x:
@@ -244,8 +249,8 @@ def multipliers(x, c, q, lam, workdir, name):
     lines.append("End")  # all variables default to [0, inf)
     vals, _ = run_gurobi("\n".join(lines) + "\n", workdir, name, {"FeasibilityTol": 1e-9, "OptimalityTol": 1e-9})
     nu = np.array([vals.get(f"nu_{i}", 0.0) for i in range(I)])
-    gm = np.array([vals.get(f"gm_{j}", 0.0) for j in range(J)])
-    gb = np.array([vals.get(f"gb_{j}", 0.0) for j in range(J)])
+    gm = np.array([vals.get(f"gm_{rep_of[j]}", 0.0) for j in range(J)])
+    gb = np.array([vals.get(f"gb_{rep_of[j]}", 0.0) for j in range(J)])
     idx = rhs - gm[None, :] * c["aM"] - gb[None, :] * c["aB"]      # I*_ij = r - c* - gamma* a
     resid_pos = np.where(x > tol_x, np.abs(idx - nu[:, None]), 0.0).max()
     resid_zero = np.where(x <= tol_x, np.maximum(idx - nu[:, None], 0.0), 0.0).max()
@@ -289,8 +294,9 @@ def main():
         import aggregate as agg_mod
         groups = agg_mod.groups_of(gpus)
         v_agg, Xg, st = agg_mod.solve_aggregate(types, groups, lam, a.blocks, fit, a.budget, a.block_size, name=tag + "_agg")
-        cols = []
+        cols, rep_of = [], []
         for k, (g, N) in enumerate(groups):
+            rep_of += [len(cols)] * N         # first instance of the type represents it in the KKT LP
             cols += [Xg[:, k] / N] * N        # every instance of GPU type g gets the type's flow split equally
         x = np.array(cols).T
         c = coefficients(types, gpus, M, b, fit)
@@ -300,8 +306,9 @@ def main():
     else:
         x, c, bound, gap, status = solve(types, gpus, lam, M, b, fit, a.time_limit, a.workdir, tag, a.start or None)
         formulation = "per instance"
+        rep_of = None
     q = fluid_quantities(x, c, M, b)
-    nu, gm, gb, idx, resid = multipliers(x, c, q, lam, a.workdir, tag + "_kkt")
+    nu, gm, gb, idx, resid = multipliers(x, c, q, lam, a.workdir, tag + "_kkt", rep_of)
     J = len(gpus)
     out = {
         "meta": {
