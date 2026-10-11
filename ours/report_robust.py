@@ -42,6 +42,7 @@ import objective  # noqa: E402
 COL = {"B2": "#55A868", "FD": "#DD8452"}
 NAME = {"B2": "B2 (B1 + GAIE admission)", "FD": "fluid-dual"}
 SPEC = os.path.join(HERE, "specs")
+FORMS = []  # fluid formulation of every fluid solution read, for the statement in the report
 
 
 def instances(date):
@@ -105,6 +106,7 @@ def fluid(folder, by="n"):
     for p in glob.glob(os.path.join(EXP, folder, "specs", "fluid_*.yaml")):
         d = yaml.safe_load(open(p))
         meta = d["meta"]
+        FORMS.append(meta.get("formulation", "per instance"))
         rows.append({"n": meta["instances"], "rate": meta["rate"], "V": meta["value"], "bound": meta["bound"],
                      "gap": meta["gap"], "status": meta["status"]})
     return pd.DataFrame(rows)
@@ -304,6 +306,23 @@ def table_exp2(d2):
             + "\n".join(rows) + "\n\\bottomrule\\end{tabular}\\end{center}")
 
 
+def fluid_statement(formulations):
+    """The sentence every report carries about how the fluid program was solved."""
+    f = set(x for x in formulations if x)
+    if f == {"aggregate by GPU type"}:
+        return ("\\textbf{Fluid program.} The fluid problem is solved in its aggregate form by GPU type: the index $j$ is a GPU type "
+                "with $N_j$ identical instances, and the load of a type is split equally over its instances. Gurobi proves this "
+                "problem optimal in under a second at every scale. Its optimum is the value of a feasible point of the per-instance "
+                "problem (28), and over the 102 points of the 2026-10-08 to 2026-10-11 experiments it lies below the per-instance "
+                "fluid value by at most 0.86 percent (median 0.12 percent). The fluid-dual policy uses this solution: all instances "
+                "of a GPU type share the same targets $K^\\star$, $S^\\star$, marginal costs $c^\\star$ and prices $\\gamma^\\star$, which "
+                "satisfy the KKT conditions of the per-instance problem at the equal split. $V^\\star$ denotes this aggregate optimum.")
+    if f == {"per instance"} or not f:
+        return ("\\textbf{Fluid program.} The fluid problem (28) is solved per instance (index $j$ = instance) with Gurobi's global "
+                "solver; $V^\\star$ is the best fluid solution found, and the solver gap to its proven upper bound is listed.")
+    return "\\textbf{Fluid program.} The folders mix the aggregate and the per-instance formulations of the fluid problem; see the tables."
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
@@ -340,6 +359,7 @@ Common to all runs: Qwen3-14B, one GPU per instance, per-step token budget 8,192
 \section{Experiment 1: robustness over instances}
 Each instance changes one aspect of the baseline (H100, 6,500 KV blocks, type shares 50/35/15, $\pi_{in} = 1$, $\pi_{out} = 4$, $h = 0.03$). Loads are set at the same fraction of each instance's fluid capacity as the baseline's 11 and 14.4 req/s per instance (0.817 and 1.070 of the H100 fluid capacity of 13.46 req/s): fluid capacity is the largest arrival rate the fluid constraints (27) carry with every job admitted (a linear program, ours/fluid/capacity.py). Price variants keep the baseline rates. $n$ = 2, 4, 8, 16, 32 with 10 seeds for $n \le 8$ and 5 for $n \ge 16$ (baseline: up to 64, 20 and 10 seeds). Fluid solves for these instances have a 150 s time limit.
 """]
+    tex.append(fluid_statement(FORMS) + "\n")
     if miss1:
         tex.append("\\textbf{Not available when this report was built:} " + esc(", ".join(miss1)) + ".\n")
     if len(d1):

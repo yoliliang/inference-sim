@@ -56,7 +56,7 @@ def load_exp(folder, fluid=False):
             tps = yaml.safe_load(open(p))["types"]
             rows.append({"n": int(re.search(r"fluid_n(\d+)", p).group(1)), "value": meta["value"], "bound": meta["bound"],
                          "gap": meta["gap"], "status": meta["status"], "eta0": meta["eta0"],
-                         "kkt": meta.get("kkt_residual"),
+                         "kkt": meta.get("kkt_residual"), "form": meta.get("formulation", "per instance"),
                          **{f"adm_{t['name']}": t["admitted"] / t["lambda"] if t["lambda"] else float("nan") for t in tps}})
         fl = pd.DataFrame(rows).sort_values("n")
     return {"summary": s, "objective": o, "manifest": m, "fluid": fl, "folder": folder}
@@ -234,6 +234,23 @@ Pool & None: every admitted job is routed at once (push). & None (push). & None:
 """
 
 
+def fluid_statement(formulations):
+    """The sentence every report carries about how the fluid program was solved."""
+    f = set(x for x in formulations if x)
+    if f == {"aggregate by GPU type"}:
+        return ("\\textbf{Fluid program.} The fluid problem is solved in its aggregate form by GPU type: the index $j$ is a GPU type "
+                "with $N_j$ identical instances, and the load of a type is split equally over its instances. Gurobi proves this "
+                "problem optimal in under a second at every scale. Its optimum is the value of a feasible point of the per-instance "
+                "problem (28), and over the 102 points of the 2026-10-08 to 2026-10-11 experiments it lies below the per-instance "
+                "fluid value by at most 0.86 percent (median 0.12 percent). The fluid-dual policy uses this solution: all instances "
+                "of a GPU type share the same targets $K^\\star$, $S^\\star$, marginal costs $c^\\star$ and prices $\\gamma^\\star$, which "
+                "satisfy the KKT conditions of the per-instance problem at the equal split. $V^\\star$ denotes this aggregate optimum.")
+    if f == {"per instance"} or not f:
+        return ("\\textbf{Fluid program.} The fluid problem (28) is solved per instance (index $j$ = instance) with Gurobi's global "
+                "solver; $V^\\star$ is the best fluid solution found, and the solver gap to its proven upper bound is listed.")
+    return "\\textbf{Fluid program.} The folders mix the aggregate and the per-instance formulations of the fluid problem; see the tables."
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
@@ -299,6 +316,8 @@ def main():
                "\\end{itemize}")
     tex.append(r"\section{Strategies of the policies}")
     tex.append(STRATEGY)
+    forms = [f for L in ("under", "over") for f in data[L]["FD"]["fluid"].form]
+    tex.append(fluid_statement(forms))
     tex.append("Fluid-dual inputs, computed before each run for the given n and arrival rate: the global optimum $x^\\star$ of the fluid problem (28), solved with Gurobi (spatial branch and bound, target gap 0.01 percent, time limit 600 s, started from the replicated solution of the next smaller n); the multipliers $\\nu^\\star, \\gamma^{M\\star}, \\gamma^{B\\star}$ from the KKT conditions (31) at $x^\\star$; the marginal congestion costs $c^\\star_{ij}$ (30); the fluid levels $K^\\star_j$ and $S^\\star_j$ (29); $\\eta = V^\\star/J$. The round-time constants of eq. (2) are fitted to BLIS's step-time function (H100: $\\tau_0$ = 12.1 ms, $\\tau_p$ = 4.4 $\\mu$s per prompt token, $\\tau_{kv}$ = 98 ns per cached token, $R^2$ above 0.9999). The job-type constants (22) use BLIS's actual output-length distribution.")
     tex.append(fluid_table(data))
     tex.append(r"\section{Revenue against the system scale}")

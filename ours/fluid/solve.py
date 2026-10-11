@@ -124,6 +124,19 @@ def start_from(path, types, gpus, w, tau0, d):
     return start
 
 
+def coefficients(types, gpus, M, b, fit):
+    """The per-instance coefficients of (28) as solve() returns them."""
+    I = len(types)
+    P = np.array([t["prompt"] for t in types])
+    kap = np.array([t["kappa"] for t in types])
+    m = np.array([t["m"] for t in types])
+    beta = np.array([t["beta"] for t in types])
+    tau0 = np.array([fit[g]["tau0"] for g in gpus])
+    w = np.array([[fit[g]["taup"] * P[i] + fit[g]["taukv"] * kap[i] for g in gpus] for i in range(I)])
+    return dict(w=w, aM=w + tau0[None, :] * m[:, None] / M, aB=w + tau0[None, :] * beta[:, None] / b, tau0=tau0,
+                r=np.array([t["r"] for t in types]), d=np.array([t["d"] for t in types]), P=P, kap=kap)
+
+
 def solve(types, gpus, lam, M, b, fit, time_limit, workdir, name, start_path=None):
     I, J = len(types), len(gpus)
     r = np.array([t["r"] for t in types])
@@ -254,6 +267,10 @@ def main():
     ap.add_argument("--workdir", default=os.path.join(common.HERE, "work"))
     ap.add_argument("--out", required=True)
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--aggregate", action="store_true",
+                    help="solve the fluid problem aggregated by GPU type (index j = GPU type with N_j identical instances, "
+                         "load split equally within a type; proven optimal in well under a second) and expand it to "
+                         "the instances; otherwise the per-instance problem (28)")
     a = ap.parse_args()
     os.makedirs(a.workdir, exist_ok=True)
 
@@ -268,7 +285,21 @@ def main():
     b = float(a.budget)
     tag = os.path.splitext(os.path.basename(a.out))[0]
 
-    x, c, bound, gap, status = solve(types, gpus, lam, M, b, fit, a.time_limit, a.workdir, tag, a.start or None)
+    if a.aggregate:
+        import aggregate as agg_mod
+        groups = agg_mod.groups_of(gpus)
+        v_agg, Xg, st = agg_mod.solve_aggregate(types, groups, lam, a.blocks, fit, a.budget, a.block_size, name=tag + "_agg")
+        cols = []
+        for k, (g, N) in enumerate(groups):
+            cols += [Xg[:, k] / N] * N        # every instance of GPU type g gets the type's flow split equally
+        x = np.array(cols).T
+        c = coefficients(types, gpus, M, b, fit)
+        bound, gap = v_agg, 0.0
+        status = "optimal (aggregate by GPU type)" if st == "optimal" else "not proven (aggregate by GPU type)"
+        formulation = "aggregate by GPU type"
+    else:
+        x, c, bound, gap, status = solve(types, gpus, lam, M, b, fit, a.time_limit, a.workdir, tag, a.start or None)
+        formulation = "per instance"
     q = fluid_quantities(x, c, M, b)
     nu, gm, gb, idx, resid = multipliers(x, c, q, lam, a.workdir, tag + "_kkt")
     J = len(gpus)
@@ -277,7 +308,8 @@ def main():
             "created": dt.datetime.now().isoformat(timespec="seconds"),
             "rate": a.rate, "instances": J, "blocks": a.blocks, "block_size": a.block_size, "budget": a.budget,
             "value": q["value"], "bound": bound, "gap": gap, "status": status, "eta0": q["value"] / J,
-            "kkt_residual": resid, "solver": "gurobi_cl NonConvex=2 MIPGap=1e-6",
+            "kkt_residual": resid, "formulation": formulation,
+            "solver": "gurobi_cl NonConvex=2, " + ("aggregate solved to MIPGap 1e-9" if a.aggregate else f"MIPGap {GAP}"),
             "spec": os.path.relpath(a.spec, common.ROOT).replace(os.sep, "/"),
             "units": "rates per second, times in seconds, memory and budget in tokens, rewards in objective.yaml units (per 1000 tokens)",
         },

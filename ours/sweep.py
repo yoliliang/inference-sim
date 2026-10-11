@@ -224,6 +224,8 @@ def main():
                          "statistics come from the window block either way")
     ap.add_argument("--objective", default=os.path.join(HERE, "specs", "objective.yaml"),
                     help="fluid_dual profile: prices and holding costs used by the fluid solve")
+    ap.add_argument("--fluid-per-instance", action="store_true",
+                    help="fluid_dual profile: solve the per-instance fluid problem (28) instead of the default aggregate by GPU type")
     ap.add_argument("--fluid-gap", type=float, default=1e-4,
                     help="fluid_dual profile: relative optimality gap of the global fluid solve")
     ap.add_argument("--fluid-time-limit", type=float, default=600,
@@ -283,7 +285,8 @@ def main():
         "state_sample_ms": a.state_sample_ms, "state_snapshot_s": a.state_snapshot_s,
         "keep_paths": a.keep_paths, "seeds_from_n": a.seeds_from_n,
         "blocks": a.blocks, "profile": a.profile, "pools": a.pools,
-        "fluid_gap": a.fluid_gap if a.profile.startswith("fluid") else None, "objective": a.objective,
+        "fluid_gap": a.fluid_gap if a.profile.startswith("fluid") else None,
+        "fluid_formulation": ("per instance" if a.fluid_per_instance else "aggregate by GPU type") if a.profile.startswith("fluid") else None, "objective": a.objective,
         "base_flags": BASE_FLAGS + PROFILES[a.profile] + mode_flags,
         "extra_flags": a.extra,
         "rates": rates, "seeds": seeds, "spec_template": a.spec,
@@ -333,7 +336,8 @@ def main():
             fluid_yaml = os.path.join(exp, "specs", f"fluid_{rtag}.yaml")
             if not (a.resume and os.path.exists(fluid_yaml)):
                 t0 = time.time()
-                start = ["--start", prev_fluid] if scaling and prev_fluid else []
+                start = ["--start", prev_fluid] if scaling and prev_fluid and a.fluid_per_instance else []
+                start += [] if a.fluid_per_instance else ["--aggregate"]
                 subprocess.run([sys.executable, os.path.join(HERE, "fluid", "solve.py"), "--rate", str(rate),
                                 "--instances", inst, "--blocks", str(a.blocks), "--spec", a.spec, "--objective", a.objective,
                                 "--time-limit", str(a.fluid_time_limit), "--out", fluid_yaml, "--quiet", *start],
