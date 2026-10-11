@@ -271,6 +271,185 @@ def fig_exp2(d2, out):
     plt.close(fig)
 
 
+GPU_COL = {"H100": "#4C72B0", "A100": "#8172B2", "L40S": "#C44E52"}
+TYPE_COL = ["#9ecae1", "#4292c6", "#08519c"]
+
+
+def instance_design(key):
+    """what one instance looks like, for the illustration: GPUs at n = 8, blocks, type shares, prices, what changed."""
+    gpus, blocks = ["H100"] * 8, "6,500 KV blocks per GPU"
+    shares, prices, changed = (50, 35, 15), (1, 4, 0.03), None
+    if key == "hetHA":
+        gpus, changed = ["H100"] * 4 + ["A100"] * 4, "gpu"
+    elif key == "hetHL":
+        gpus, blocks, changed = ["H100"] * 4 + ["L40S"] * 4, "H100 6,500, L40S 4,113 blocks", "gpu"
+    elif key == "A100":
+        gpus, changed = ["A100"] * 8, "gpu"
+    elif key == "L40S":
+        gpus, blocks, changed = ["L40S"] * 8, "4,113 KV blocks per GPU (its maximum)", "gpu"
+    elif key == "mix304030":
+        shares, changed = (30, 30, 40), "mix"
+    elif key == "piout1":
+        prices, changed = (1, 1, 0.03), "price"
+    elif key == "h0.1":
+        prices, changed = (1, 4, 0.1), "price"
+    elif key == "h0.01":
+        prices, changed = (1, 4, 0.01), "price"
+    return dict(gpus=gpus, blocks=blocks, shares=shares, prices=prices, changed=changed)
+
+
+def fig_instance_cards(insts, out):
+    from matplotlib.patches import Rectangle, FancyBboxPatch
+    fig, axes = plt.subplots(3, 3, figsize=(12.5, 10.5), dpi=140)
+    for ax, inst in zip(axes.ravel(), insts):
+        d = instance_design(inst["key"])
+        ax.set_xlim(0, 10); ax.set_ylim(0, 10); ax.set_axis_off()
+        edge = "#cc0000" if d["changed"] is None and False else "#888888"
+        ax.add_patch(FancyBboxPatch((0.1, 0.1), 9.8, 9.8, boxstyle="round,pad=0.02,rounding_size=0.3",
+                                    fc="#fafafa" if inst["key"] != "base" else "#fff8e6", ec=edge, lw=1))
+        ax.text(5, 9.25, inst["label"].replace("pi_out", r"$\pi_{out}$"), ha="center", va="center", fontsize=10.5, weight="bold")
+        ax.text(5, 8.55, "reference" if inst["key"] == "base" else "changes: " + {"gpu": "hardware", "mix": "workload", "price": "prices"}[d["changed"]],
+                ha="center", va="center", fontsize=8, color="#cc0000" if d["changed"] else "#555555")
+        # cluster at n = 8
+        ax.text(0.5, 7.75, "cluster at n = 8", fontsize=7.5, color="#444444")
+        for q, g in enumerate(d["gpus"]):
+            ax.add_patch(Rectangle((0.55 + q * 1.13, 6.35), 1.0, 1.1, fc=GPU_COL[g], ec="white"))
+            ax.text(1.05 + q * 1.13, 6.9, g, ha="center", va="center", fontsize=6, color="white", weight="bold")
+        ax.text(0.5, 5.85, d["blocks"], fontsize=7, color="#444444")
+        # workload bar
+        ax.text(0.5, 4.95, "arrival mix: chat / RAG / long generation", fontsize=7.5, color="#444444")
+        x0 = 0.55
+        for q, s in enumerate(d["shares"]):
+            w = 8.9 * s / 100
+            ax.add_patch(Rectangle((x0, 3.75), w, 0.9, fc=TYPE_COL[q], ec="white"))
+            ax.text(x0 + w / 2, 4.2, f"{s}%", ha="center", va="center", fontsize=7.5, color="white" if q else "black")
+            x0 += w
+        # prices
+        pi, po, h = d["prices"]
+        ax.text(0.5, 2.85, "prices", fontsize=7.5, color="#444444")
+        ax.text(5, 2.25, rf"$\pi_{{in}} = {pi:g}$,   $\pi_{{out}} = {po:g}$,   $h = {h:g}$", ha="center", va="center", fontsize=9)
+        # capacity and loads
+        cap = inst["rate"]["under"] / 0.817 if inst["key"] not in ("piout1", "h0.1", "h0.01") else 13.46
+        ax.text(5, 1.0, f"fluid capacity {cap:.2f} req/s per instance\nruns at {inst['rate']['under']:.4g} (under) and {inst['rate']['over']:.4g} (over) req/s per instance",
+                ha="center", va="center", fontsize=7.2, color="#333333")
+        box = {"gpu": (0.35, 5.65, 9.3, 2.5), "mix": (0.35, 3.55, 9.3, 1.85), "price": (0.35, 1.8, 9.3, 1.45)}.get(d["changed"])
+        if box:
+            ax.add_patch(Rectangle(box[:2], box[2], box[3], fill=False, ec="#cc0000", lw=1.8))
+    handles = [Rectangle((0, 0), 1, 1, fc=c) for c in GPU_COL.values()]
+    fig.legend(handles, ["H100", "A100-80", "L40S"], loc="lower center", ncol=3, frameon=False, fontsize=9)
+    fig.tight_layout(rect=(0, 0.03, 1, 1))
+    fig.savefig(out)
+    plt.close(fig)
+
+
+def fig_advantage_heatmap(df, insts, out):
+    keys = [i["key"] for i in insts if i["key"] in set(df.inst)]
+    labels = [i["label"].replace("pi_out", r"$\pi_{out}$") for i in insts if i["key"] in set(df.inst)]
+    ns = sorted(set(df.n))
+    fig, axes = plt.subplots(1, 2, figsize=(12.5, 4.6), dpi=140)
+    vmax = float(np.nanmax(np.abs(df.adv)))
+    for ax, load in zip(axes, ("under", "over")):
+        M = np.full((len(keys), len(ns)), np.nan)
+        for r, k in enumerate(keys):
+            for c, n in enumerate(ns):
+                g = df[(df.inst == k) & (df.load == load) & (df.n == n)]
+                if len(g):
+                    M[r, c] = g.adv.iloc[0]
+        im = ax.imshow(M, cmap="RdBu", vmin=-vmax, vmax=vmax, aspect="auto")
+        for r in range(len(keys)):
+            for c in range(len(ns)):
+                if M[r, c] == M[r, c]:
+                    ax.text(c, r, f"{M[r, c]:+.1f}", ha="center", va="center", fontsize=7.5,
+                            color="white" if abs(M[r, c]) > 0.6 * vmax else "black")
+        ax.set_xticks(range(len(ns)), [str(int(n)) for n in ns])
+        ax.set_yticks(range(len(keys)), labels if load == "under" else [""] * len(keys), fontsize=8)
+        ax.set_xlabel("system scale n (instances)")
+        ax.set_title(("underloaded" if load == "under" else "overloaded") + ": fluid-dual minus B2, percent of $V^*$", fontsize=10)
+    fig.colorbar(im, ax=axes, shrink=0.85, label="percent of $V^*$ (blue: fluid-dual ahead)")
+    fig.savefig(out, bbox_inches="tight")
+    plt.close(fig)
+
+
+def fig_instance_grid(df, insts, load, out):
+    rows = [i for i in insts if i["key"] in set(df.inst)]
+    fig, axes = plt.subplots(3, 3, figsize=(12.5, 10), dpi=140, sharey=True)
+    lo = 100 - max(df[df.load == load].B2_gap.max(), df[df.load == load].FD_gap.max()) - 2
+    for ax, inst in zip(axes.ravel(), rows):
+        g = df[(df.inst == inst["key"]) & (df.load == load)].sort_values("n")
+        for k, ls, mk in (("B2", "--", "s"), ("FD", "-", "o")):
+            y = 100 * g[k] / g.V
+            e = 100 * g[f"{k}_ci"].fillna(0) / g.V
+            ax.plot(g.n, y, ls=ls, marker=mk, ms=4, lw=1.7, color=COL[k], label=NAME[k])
+            ax.fill_between(g.n, y - e, y + e, color=COL[k], alpha=0.2, lw=0)
+        ax.axhline(100, color="black", ls=":", lw=1, label="fluid optimum $V^*$")
+        xstyle(ax, list(g.n))
+        ax.set_ylim(lo, 101.5)
+        ax.set_title(inst["label"].replace("pi_out", r"$\pi_{out}$") + f"  ({g.rate.iloc[0]:.4g} req/s per instance)", fontsize=9)
+        if ax in axes[:, 0]:
+            ax.set_ylabel("revenue earned, percent of $V^*$")
+    for ax in axes.ravel()[len(rows):]:
+        ax.set_axis_off()
+    h, l = axes[0, 0].get_legend_handles_labels()
+    fig.legend(h, l, loc="lower center", ncol=3, frameon=False, fontsize=9)
+    fig.suptitle(("Underloaded" if load == "under" else "Overloaded") + (" (0.817 times fluid capacity)" if load == "under" else " (1.070 times fluid capacity)") + ": share of the fluid optimum earned, by instance", fontsize=11)
+    fig.tight_layout(rect=(0, 0.04, 1, 0.97))
+    fig.savefig(out)
+    plt.close(fig)
+
+
+def demand_axes(ax, d2, cap=13.46, n=8):
+    x = d2.rpi
+    ax.axvspan(cap, x.max() + 0.5, color="#f2f2f2", zorder=0)
+    ax.axvline(cap, color="grey", ls=":", lw=1.2)
+    ax.set_xlim(x.min() - 0.5, x.max() + 0.5)
+    ax.set_xlabel("demand rate per instance (req/s)")
+    ax.grid(True, color="#e5e5e5", lw=0.8)
+    for sp in ("top", "right"):
+        ax.spines[sp].set_visible(False)
+    top = ax.secondary_xaxis("top", functions=(lambda v: v / cap, lambda v: v * cap))
+    top.set_xlabel("demand / fluid capacity")
+
+
+def fig_demand_performance(d2, out):
+    fig, ax = plt.subplots(figsize=(10, 5.6), dpi=150)
+    x = d2.rpi
+    demand_axes(ax, d2)
+    for k, mk in (("B2", "s"), ("FD", "o")):
+        y = 100 - d2[f"{k}_gap"]
+        e = d2[f"{k}_gap_ci"]
+        ax.plot(x, y, marker=mk, ms=5, lw=2, color=COL[k], label=NAME[k])
+        ax.fill_between(x, y - e, y + e, color=COL[k], alpha=0.2, lw=0)
+        ax.annotate(f"{y.iloc[-1]:.1f}%", (x.iloc[-1], y.iloc[-1]), xytext=(6, 0), textcoords="offset points",
+                    va="center", fontsize=9, color=COL[k], weight="bold")
+    ax.axhline(100, color="black", ls="--", lw=1.1, label="fluid optimum $V^*$ (100%)")
+    ymin = float((100 - d2.B2_gap).min())
+    ax.text(10, ymin + 1, "underloaded", ha="center", fontsize=10, color="#555555")
+    ax.text(17, ymin + 1, "overloaded", ha="center", fontsize=10, color="#555555")
+    ax.set_ylabel("revenue earned, percent of the fluid optimum $V^*$")
+    ax.set_ylim(ymin - 2, 102)
+    ax.legend(frameon=False, loc="lower left", fontsize=9)
+    ax.set_title("Performance as demand grows: baseline (H100, 6,500 blocks), n = 8, 10 seeds, bands 95 percent", fontsize=10, pad=34)
+    fig.tight_layout()
+    fig.savefig(out)
+    plt.close(fig)
+
+
+def fig_demand_revenue(d2, out):
+    fig, ax = plt.subplots(figsize=(10, 5.6), dpi=150)
+    x = d2.rpi
+    demand_axes(ax, d2)
+    ax.plot(x, d2.V, ls="--", color="black", lw=1.3, label="fluid optimum $V^*$")
+    for k, mk in (("B2", "s"), ("FD", "o")):
+        ax.plot(x, d2[k], marker=mk, ms=5, lw=2, color=COL[k], label=NAME[k])
+        ax.fill_between(x, d2[k] - d2[f"{k}_ci"], d2[k] + d2[f"{k}_ci"], color=COL[k], alpha=0.2, lw=0)
+    ax.set_ylabel("revenue per second (whole cluster, n = 8)")
+    ax.legend(frameon=False, loc="upper left", fontsize=9)
+    ax.set_title("Revenue as demand grows: B2 saturates at capacity, fluid-dual follows $V^*$", fontsize=10)
+    fig.tight_layout()
+    fig.savefig(out)
+    plt.close(fig)
+
+
 def esc(s):
     return str(s).replace("_", r"\_").replace("%", r"\%").replace("&", r"\&")
 
@@ -337,8 +516,14 @@ def main():
     if len(d1):
         fig_instances(d1, insts, os.path.join(a.out, "exp1_instances.png"))
         fig_gaps(d1, insts, os.path.join(a.out, "exp1_gaps.png"))
+        fig_advantage_heatmap(d1, insts, os.path.join(a.out, "exp1_advantage.png"))
+        for load in ("under", "over"):
+            fig_instance_grid(d1, insts, load, os.path.join(a.out, f"exp1_grid_{load}.png"))
+    fig_instance_cards(insts, os.path.join(a.out, "exp1_cards.png"))
     if len(d2):
         fig_exp2(d2, os.path.join(a.out, "exp2_load_sweep.png"))
+        fig_demand_performance(d2, os.path.join(a.out, "exp2_performance.png"))
+        fig_demand_revenue(d2, os.path.join(a.out, "exp2_revenue.png"))
 
     tex = [r"""\documentclass[10pt]{article}
 \usepackage[margin=1.8cm]{geometry}
@@ -362,7 +547,14 @@ Each instance changes one aspect of the baseline (H100, 6,500 KV blocks, type sh
     tex.append(fluid_statement(FORMS) + "\n")
     if miss1:
         tex.append("\\textbf{Not available when this report was built:} " + esc(", ".join(miss1)) + ".\n")
+    tex.append(r"\subsection{The instances}")
+    tex.append("Nine instances: the baseline and eight variants, each changing one thing (red frame). Hardware variants change the GPU type or mix; the workload variant shifts arrivals toward long generation; price variants change the output price or the holding cost. The cluster is drawn at $n = 8$; every instance is run at $n$ = 2 to 32 (baseline to 64) by repeating the same composition.")
+    tex.append("\\begin{figure}[H]\\centering\\includegraphics[width=\\textwidth]{exp1_cards.png}\\caption{The nine instances. Boxes: GPUs at $n = 8$; bar: arrival shares of chat ($P = 256$, mean output 64), RAG ($P = 2048$, mean output 128) and long generation ($P = 512$, mean output 1024); prices per 1,000 tokens and holding cost per job per second.}\\end{figure}")
     if len(d1):
+        tex.append(r"\subsection{Results by instance}")
+        tex.append("\\begin{figure}[H]\\centering\\includegraphics[width=\\textwidth]{exp1_advantage.png}\\caption{Advantage of fluid-dual over B2, $100\\,(V_{FD} - V_{B2})/V^\\star$, for every instance and scale. Blank: scale not run for that instance.}\\end{figure}")
+        for load, word in (("under", "underloaded"), ("over", "overloaded")):
+            tex.append("\\begin{figure}[H]\\centering\\includegraphics[width=\\textwidth]{exp1_grid_" + load + ".png}\\caption{" + word.capitalize() + ": revenue earned as a percent of the fluid optimum $V^\\star$ against $n$, one panel per instance; solid fluid-dual, dashed B2; bands 95 percent over seeds.}\\end{figure}")
         tex.append("\\begin{figure}[H]\\centering\\includegraphics[width=\\textwidth]{exp1_gaps.png}\\caption{Top: loss to the fluid optimum against $n$ for every instance (solid fluid-dual, dashed B2, one colour per instance). Bottom: advantage of fluid-dual over B2 in percent of $V^\\star$. Left underloaded, right overloaded.}\\end{figure}")
         tex.append("\\begin{figure}[H]\\centering\\includegraphics[width=\\textwidth,height=0.92\\textheight,keepaspectratio]{exp1_instances.png}\\caption{Revenue per second per instance against $n$, every instance and load; dashed $V^\\star/n$; bands 95 percent over seeds.}\\end{figure}")
         tex.append(r"\subsection*{Tables}")
@@ -370,7 +562,9 @@ Each instance changes one aspect of the baseline (H100, 6,500 KV blocks, type sh
     tex.append(r"\section{Experiment 2: sensitivity to the demand rate}")
     tex.append("Representative instance: the baseline (H100, 6,500 blocks) at $n = 8$, the largest scale at which the fluid problem is still solved to near optimality in a few minutes. Total demand 48 to 160 req/s, i.e. 6 to 20 req/s per instance (0.45 to 1.49 times the fluid capacity), 10 seeds per point, fluid solve time limit 300 s.")
     if len(d2):
-        tex.append("\\begin{figure}[H]\\centering\\includegraphics[width=\\textwidth]{exp2_load_sweep.png}\\caption{Against the demand rate per instance: loss to the fluid optimum (top left, bands 95 percent over seeds), revenue with $V^\\star$, share rejected, mean TTFT.}\\end{figure}")
+        tex.append("\\begin{figure}[H]\\centering\\includegraphics[width=\\textwidth]{exp2_performance.png}\\caption{Performance as demand loads up: revenue earned as a percent of the fluid optimum $V^\\star$ at each demand rate. Shaded: demand above the fluid capacity (13.46 req/s per instance). Bands 95 percent over 10 seeds.}\\end{figure}")
+        tex.append("\\begin{figure}[H]\\centering\\includegraphics[width=\\textwidth]{exp2_revenue.png}\\caption{Revenue per second of the whole cluster ($n = 8$) against the demand rate, with the fluid optimum $V^\\star$.}\\end{figure}")
+        tex.append("\\begin{figure}[H]\\centering\\includegraphics[width=\\textwidth]{exp2_load_sweep.png}\\caption{Supplement. Against the demand rate per instance: loss to the fluid optimum (top left, bands 95 percent over seeds), revenue with $V^\\star$, share rejected, mean TTFT.}\\end{figure}")
         tex.append(table_exp2(d2))
     else:
         tex.append("\\textbf{Not available when this report was built:} " + esc(", ".join(miss2)) + ".")
