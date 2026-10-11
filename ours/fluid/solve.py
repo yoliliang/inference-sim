@@ -91,7 +91,7 @@ def start_from(path, types, gpus, w, tau0, d):
     first, to satisfy the symmetry-breaking rows. Returns {var: value} or None."""
     old = yaml.safe_load(open(path))
     J0, J = len(old["instances"]), len(gpus)
-    if J % J0 or J <= J0:
+    if J % J0 or J < J0:
         return None
     k = J // J0
     # GPU groups must keep their order and grow by the same factor (pools are filled in order)
@@ -161,7 +161,9 @@ def solve(types, gpus, lam, M, b, fit, time_limit, workdir, name, start_path=Non
         lines.append(f" 0 <= g_{j} <= {num(U[j])}")
     lines.append("End")
     params = {"NonConvex": 2, "MIPGap": GAP, "MIPGapAbs": 1e-9, "FeasibilityTol": 1e-9,
-              "OptimalityTol": 1e-9, "TimeLimit": time_limit, "Threads": 0}
+              "OptimalityTol": 1e-9, "TimeLimit": time_limit, "Threads": int(os.environ.get("FLUID_THREADS", "0"))}
+    if os.environ.get("FLUID_MIPFOCUS"):
+        params["MIPFocus"] = int(os.environ["FLUID_MIPFOCUS"])
     start = start_from(start_path, types, gpus, w, tau0, d) if start_path else None
     if start:
         mst = os.path.join(workdir, name + ".mst")
