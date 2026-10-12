@@ -127,7 +127,7 @@ type DeploymentConfig struct {
 	// of ours/fluid/solve.py, FluidEtaScale the multiplier of eta0 = V*/J.
 	FluidParams   *sim.FluidDualParams
 	FluidEtaScale float64
-	FluidMode     string  // index (default, current draft) or rate-tracking
+	FluidMode     string  // index (default, current draft), rate-tracking, or static (benchmark: thinning and splitting at x*)
 	FluidKScale   float64 // k_ij = FluidKScale * lambda_i / r_i
 	FluidWeights  string  // projection weights: inverse-rate (default) or uniform
 

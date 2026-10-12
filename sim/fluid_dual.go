@@ -9,8 +9,13 @@ package sim
 //     smallest instance index. No admission fractions or routing shares are enforced.
 //   mode "rate-tracking" (the intermediate draft): the procedure described below
 //     (provisional rates, projection, admission accumulator, routing deficits).
+//   mode "static" (benchmark, not a draft policy): ignores the state. A type-i arrival is
+//     accepted with probability a_i = min(1, sum_j x*_ij / lambda_i) and an accepted job goes
+//     to routable instance j with probability x*_ij / sum_j' x*_ij' (Bernoulli thinning and
+//     splitting, so each (i, j) stream is Poisson with rate x*_ij). Draws come from a dedicated
+//     seeded stream (FluidDualOptions.RNG), so runs are reproducible.
 //
-// Both use the same state prices and indices. Batching and eviction (parts 2 and 3
+// index and rate-tracking use the same state prices and indices. Batching and eviction (parts 2 and 3
 // of the definition) are vLLM's default rules, which the simulator already executes: every
 // prefilled job continues, stage-0 jobs join in arrival order while the token budget and the
 // memory hold, and the most recently started job is evicted first.
@@ -50,6 +55,7 @@ package sim
 import (
 	"fmt"
 	"math"
+	"math/rand"
 	"os"
 	"sort"
 
@@ -139,8 +145,9 @@ type FluidDualState func(instanceID string) (kvTokens, stage0Prompt int64, ok bo
 
 // FluidDualOptions are the tuning constants of the policy.
 type FluidDualOptions struct {
-	Mode     string  // "index" (default) or "rate-tracking"
-	EtaScale float64 // eta = EtaScale * eta0
+	Mode     string     // "index" (default), "rate-tracking" or "static"
+	RNG      *rand.Rand // random stream of the static mode (required there, unused otherwise)
+	EtaScale float64    // eta = EtaScale * eta0
 	KScale   float64 // k_ij = KScale * lambda_i / r_i
 	Weights  string  // projection weights: "inverse-rate" (omega_ij = 1/lambda_i, default) or "uniform" (omega_ij = 1)
 }
@@ -166,6 +173,8 @@ type FluidDual struct {
 	d       [][]float64
 	live    []bool
 	scratch struct{ u, a, w []float64 }
+	rng     *rand.Rand // static mode
+	admitP  []float64  // static mode: acceptance probability per type
 
 	// diagnostics
 	Accepted   map[string]int64
@@ -188,8 +197,11 @@ func NewFluidDual(p *FluidDualParams, o FluidDualOptions) *FluidDual {
 	if o.Mode == "" {
 		o.Mode = "index"
 	}
-	if o.Mode != "index" && o.Mode != "rate-tracking" {
-		panic(fmt.Sprintf("fluid-dual: unknown mode %q (index, rate-tracking)", o.Mode))
+	if o.Mode != "index" && o.Mode != "rate-tracking" && o.Mode != "static" {
+		panic(fmt.Sprintf("fluid-dual: unknown mode %q (index, rate-tracking, static)", o.Mode))
+	}
+	if o.Mode == "static" && o.RNG == nil {
+		panic("fluid-dual: static mode needs a random stream (FluidDualOptions.RNG)")
 	}
 	if o.KScale == 0 {
 		o.KScale = 1
@@ -223,6 +235,16 @@ func NewFluidDual(p *FluidDualParams, o FluidDualOptions) *FluidDual {
 	}
 	n := max(nI, nJ)
 	f.scratch.u, f.scratch.a, f.scratch.w = make([]float64, n), make([]float64, n), make([]float64, n)
+	f.rng, f.admitP = o.RNG, make([]float64, nI)
+	for i := 0; i < nI; i++ {
+		tot := 0.0
+		for j := 0; j < nJ; j++ {
+			tot += f.xs[i][j]
+		}
+		if f.lam[i] > 0 {
+			f.admitP[i] = math.Min(1, tot/f.lam[i])
+		}
+	}
 	return f
 }
 
@@ -407,6 +429,9 @@ func (f *FluidDual) Admit(req *Request, state *RouterState) (bool, string) {
 	if f.mode == "index" {
 		return f.admitByIndex(i, req, state)
 	}
+	if f.mode == "static" {
+		return f.admitStatic(i, req, state)
+	}
 	f.desiredRates(state)
 	ai := 0.0
 	for j := 0; j < f.nJ; j++ {
@@ -475,6 +500,46 @@ func (f *FluidDual) admitByIndex(i int, req *Request, state *RouterState) (bool,
 	f.Dispatched[req.TenantID][id]++
 	f.chosen[req.ID] = id
 	return true, fmt.Sprintf("fluid-dual: index %.6g on %s", bestIdx, id)
+}
+
+// admitStatic is the static fluid policy: accept with probability a_i, then route to routable
+// instance j with probability proportional to x*_ij. Two draws per arrival, the second only
+// for an accepted job.
+func (f *FluidDual) admitStatic(i int, req *Request, state *RouterState) (bool, string) {
+	if f.rng.Float64() >= f.admitP[i] {
+		f.Rejected[req.TenantID]++
+		return false, fmt.Sprintf("fluid-dual static: rejected (accept probability %.4f)", f.admitP[i])
+	}
+	routable := make(map[string]bool, len(state.Snapshots))
+	for _, s := range state.Snapshots {
+		routable[s.ID] = true
+	}
+	tot := 0.0
+	for j := range f.p.Instances {
+		if routable[f.p.Instances[j].ID] {
+			tot += f.xs[i][j]
+		}
+	}
+	if tot <= 0 {
+		f.Rejected[req.TenantID]++
+		return false, "fluid-dual static: no routable instance with a positive fluid rate"
+	}
+	u, best := f.rng.Float64()*tot, -1
+	for j := range f.p.Instances {
+		if !routable[f.p.Instances[j].ID] || f.xs[i][j] <= 0 {
+			continue
+		}
+		best = j
+		if u < f.xs[i][j] {
+			break
+		}
+		u -= f.xs[i][j]
+	}
+	id := f.p.Instances[best].ID
+	f.Accepted[req.TenantID]++
+	f.Dispatched[req.TenantID][id]++
+	f.chosen[req.ID] = id
+	return true, fmt.Sprintf("fluid-dual static: routed to %s", id)
 }
 
 // Route returns the instance chosen at admission. A job admitted by another policy is sent

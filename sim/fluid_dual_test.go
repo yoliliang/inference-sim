@@ -256,3 +256,86 @@ func TestFluidDualIndex_RejectsWhenEveryIndexIsNegative(t *testing.T) {
 		t.Fatal("index 0.2 >= 0 must be accepted")
 	}
 }
+
+// Static mode (benchmark): accept type i with probability sum_j x*_ij / lambda_i, route to j
+// with probability proportional to x*_ij, ignoring the state.
+func newStaticFluid(seed int64) *FluidDual {
+	f := NewFluidDual(fluidTestParams(), FluidDualOptions{Mode: "static", RNG: rand.New(rand.NewSource(seed))})
+	f.SetState(atTarget().read)
+	return f
+}
+
+func TestFluidDualStatic_FrequenciesMatchTheFluidRates(t *testing.T) {
+	// type a: x* = 3 + 1 = lambda = 4, so every arrival is accepted, 3/4 to i0;
+	// type b: x* = 0.5 + 0.5 out of lambda = 2, so half accepted, split evenly.
+	f := newStaticFluid(7)
+	const n = 40000
+	st := fluidRouterState("i0", "i1")
+	for k := 0; k < n; k++ {
+		for _, ty := range []string{"a", "b"} {
+			req := &Request{ID: ty + string(rune(k)), TenantID: ty}
+			if ok, _ := f.Admit(req, st); ok {
+				f.Route(req, st)
+			}
+		}
+	}
+	if f.Rejected["a"] != 0 || f.Accepted["a"] != n {
+		t.Fatalf("type a must always be accepted: %v %v", f.Accepted, f.Rejected)
+	}
+	near := func(got, want float64) bool { return math.Abs(got-want) < 0.015 }
+	if share := float64(f.Dispatched["a"]["i0"]) / n; !near(share, 0.75) {
+		t.Fatalf("type a share to i0 %.4f, want 0.75", share)
+	}
+	if acc := float64(f.Accepted["b"]) / n; !near(acc, 0.5) {
+		t.Fatalf("type b acceptance %.4f, want 0.5", acc)
+	}
+	if share := float64(f.Dispatched["b"]["i0"]) / float64(f.Accepted["b"]); !near(share, 0.5) {
+		t.Fatalf("type b share to i0 %.4f, want 0.5", share)
+	}
+}
+
+func TestFluidDualStatic_SameSeedSameDecisions(t *testing.T) {
+	run := func() []string {
+		f := newStaticFluid(42)
+		st := fluidRouterState("i0", "i1")
+		var out []string
+		for k := 0; k < 500; k++ {
+			req := &Request{ID: string(rune(k)), TenantID: "b"}
+			if ok, _ := f.Admit(req, st); ok {
+				out = append(out, f.Route(req, st).TargetInstance)
+			} else {
+				out = append(out, "rejected")
+			}
+		}
+		return out
+	}
+	a, b := run(), run()
+	for k := range a {
+		if a[k] != b[k] {
+			t.Fatalf("decision %d differs between runs with the same seed: %s vs %s", k, a[k], b[k])
+		}
+	}
+}
+
+func TestFluidDualStatic_OnlyRoutableInstances(t *testing.T) {
+	f := newStaticFluid(3)
+	st := fluidRouterState("i1")
+	for k := 0; k < 200; k++ {
+		req := &Request{ID: string(rune(k)), TenantID: "a"}
+		if ok, _ := f.Admit(req, st); !ok {
+			t.Fatal("type a must be accepted")
+		}
+		if d := f.Route(req, st); d.TargetInstance != "i1" {
+			t.Fatalf("only i1 is routable, got %s", d.TargetInstance)
+		}
+	}
+}
+
+func TestFluidDualStatic_NeedsARandomStream(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("static mode without a random stream must panic")
+		}
+	}()
+	NewFluidDual(fluidTestParams(), FluidDualOptions{Mode: "static"})
+}

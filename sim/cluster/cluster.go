@@ -294,7 +294,8 @@ func NewClusterSimulator(config DeploymentConfig, requestSource RequestSource, o
 			panic("fluid-dual admission needs DeploymentConfig.FluidParams")
 		}
 		admissionPolicy = sim.NewFluidDual(config.FluidParams, sim.FluidDualOptions{Mode: config.FluidMode,
-			EtaScale: config.FluidEtaScale, KScale: config.FluidKScale, Weights: config.FluidWeights})
+			EtaScale: config.FluidEtaScale, KScale: config.FluidKScale, Weights: config.FluidWeights,
+			RNG: rng.ForSubsystem("fluid-static")}) // own stream: drawn only in static mode
 	case "mooncake": // ours
 		admissionPolicy = sim.NewMooncakeAdmission(config.MooncakeMode, config.MooncakeTTFTTargetS,
 			config.MooncakeTBTTargetMs, config.MooncakeTheta, config.MooncakeDecodeDurationS, config.MaxNumBatchedTokens)
