@@ -133,6 +133,11 @@ PROFILES = {
     # (ours/fluid/solve.py); push path, engine and eviction as in B1
     "fluid_dual": ["--shared-queue-push=false", "--routing-policy", "fluid-dual",
                    *with_admission(ENGINE_H100, "fluid-dual")],
+    # static fluid policy (benchmark): same fluid solution, no state feedback; a type-i arrival
+    # is accepted with probability sum_j x*_ij / lambda_i and routed to j with probability
+    # proportional to x*_ij (BLIS --fluid-mode static)
+    "fluid_static": ["--shared-queue-push=false", "--routing-policy", "fluid-dual",
+                     *with_admission(ENGINE_H100, "fluid-dual"), "--fluid-mode", "static"],
     "harness": ["--shared-queue-push=false", "--routing-policy", "weighted",
                 "--routing-scorers", "queue-depth:1,kv-utilization:1",
                 "--snapshot-refresh-interval", "0"],
