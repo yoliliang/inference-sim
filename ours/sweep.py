@@ -239,6 +239,12 @@ def main():
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) // 2),
                     help="sample paths to run concurrently, one BLIS process each (default: half the logical cores); "
                          "reduced per grid point so that concurrent runs fit MEM_BUDGET_GB")
+    ap.add_argument("--mem-budget-gb", type=float, default=MEM_BUDGET_GB,
+                    help="memory the concurrent runs of one grid point may use together, GB")
+    ap.add_argument("--mem-gb-per-instance", type=float, default=MEM_GB_PER_INSTANCE,
+                    help="peak memory of one run per instance, GB (measured 2026-10-11: about 0.012 at 1,200 s)")
+    ap.add_argument("--date", default=None,
+                    help="folder date YYYY-MM-DD (default today); give the original date to --resume a folder made on an earlier day")
     ap.add_argument("--resume", action="store_true",
                     help="skip runs whose .json.gz already exists (keeps the existing manifest)")
     ap.add_argument("extra", nargs="*", help="extra BLIS flags after --")
@@ -262,7 +268,7 @@ def main():
     fixed = a.horizon_s is not None
     if fixed and a.warmup_s + a.tail_s >= a.horizon_s:
         sys.exit("warmup-s + tail-s must be smaller than horizon-s")
-    date = dt.date.today().isoformat()
+    date = a.date or dt.date.today().isoformat()
     exp = os.path.join(HERE, "experiments", f"{date}_scaling_{a.name}" if scaling else f"{date}_{a.name}")
     for d in ("specs", "runs"):
         os.makedirs(os.path.join(exp, d), exist_ok=True)
@@ -377,7 +383,7 @@ def main():
         for j in jobs:
             groups.setdefault(j[4], []).append(j)
         for n_inst in sorted(groups):
-            workers = max(1, min(a.jobs, int(MEM_BUDGET_GB // (MEM_GB_PER_INSTANCE * n_inst))))
+            workers = max(1, min(a.jobs, int(a.mem_budget_gb // (a.mem_gb_per_instance * n_inst + 0.5))))
             with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
                 for tag, ok, line in pool.map(run_one, groups[n_inst]):
                     finished += 1
