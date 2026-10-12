@@ -319,8 +319,7 @@ def main():
     fits = fig_loglog(df, os.path.join(a.out, "exp3_loglog.png"))
     fig_revenue(df, os.path.join(a.out, "exp3_revenue.png"))
     has_adm = fig_admission(df, os.path.join(a.out, "exp3_admission.png"))
-    b2 = collect_b2(a.date, df)
-    b2.to_csv(os.path.join(a.out, "experiment3_B2_gap_vs_n.csv"), index=False)
+    b2 = pd.DataFrame()  # the user asked to leave B2 out of this experiment; collect_b2 kept for reuse
     cfits = fig_fits(df, b2, os.path.join(a.out, "exp3_fits.png"))
     cfit_rows = "\n".join(
         f"{r} & {POL[k][0]} & {int((df if k == 'FD' else b2).query('load == @r').n.min())} to "
@@ -349,8 +348,8 @@ Fluid-dual (Definition 1 of the model draft: accept a type-$i$ job iff $\max_j I
 
 The relative gap to optimality is $100\,(V^\star - V)/V^\star$, averaged over seeds.
 \section{Result}
-\subsection{Fit $C\,n^{x}\log n$ for fluid-dual and B2}
-Fit of $\text{gap}(n) = C\,n^{x}\log n$ to every point, on the gap scale, weighted by $1/\text{SE}^2$ (SE = standard error of the mean gap over seeds), so points with a gap at or below zero enter as well. Fitted with scipy's curve\_fit; the covariance is scaled by $\chi^2_{red}$, so a fit worse than the seed noise gets a wider interval; 95 percent interval of $x$ = $\hat x \pm t_{0.975,\,\text{points} - 2}\,\text{sd}(\hat x)$. $\chi^2_{red} = \chi^2_{\min}/(\text{points} - 2)$: about 1 means the curve fits within the seed noise; far above 1 means it does not. B2 was run at $n = 2$ to 64 (2026-10-10, 20 seeds for $n \le 16$, 10 above); its gap is against the same aggregate $V^\star$.
+\subsection{Fit $C\,n^{x}\log n$ for fluid-dual}
+Fit of $\text{gap}(n) = C\,n^{x}\log n$ to every point, on the gap scale, weighted by $1/\text{SE}^2$ (SE = standard error of the mean gap over seeds), so points with a gap at or below zero enter as well. Fitted with scipy's curve\_fit; the covariance is scaled by $\chi^2_{red}$, so a fit worse than the seed noise gets a wider interval; 95 percent interval of $x$ = $\hat x \pm t_{0.975,\,\text{points} - 2}\,\text{sd}(\hat x)$. $\chi^2_{red} = \chi^2_{\min}/(\text{points} - 2)$: about 1 means the curve fits within the seed noise; far above 1 means it does not.
 \begin{figure}[H]\centering\includegraphics[width=\textwidth]{exp3_fits.png}\caption{Left: relative gap against $n$ (bands 95 percent over seeds). Right: the same on log-log axes with the fitted $C\,n^{x}\log n$ (dashed); open markers are mean gaps at or below zero, drawn at their absolute value.}\end{figure}
 \begin{center}\small\begin{tabular}{llrrrrr}\toprule
 req/s per inst. & policy & $n$ & $C$ & $x$ & 95\% CI of $x$ & $\chi^2_{red}$ \\ \midrule
