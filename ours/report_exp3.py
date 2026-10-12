@@ -64,7 +64,8 @@ def collect(date):
             k = len(gaps)
             ci = analyze.t_crit(k) * gaps.std(ddof=1) / math.sqrt(k) if k > 1 else float("nan")
             row = {"load": r, "n": int(n), "seeds": k, "V": V, "status": fl[n]["status"],
-                   "FD": g.value.mean(), "gap": gaps.mean(), "gap_ci": ci}
+                   "FD": g.value.mean(), "gap": gaps.mean(), "gap_ci": ci,
+                   "gap_se": gaps.std(ddof=1) / math.sqrt(k) if k > 1 else float("nan")}
             if summ is not None:
                 a = summ[(summ.n == n) & (summ.type == "all")]
                 if len(a):
@@ -82,6 +83,98 @@ def collect(date):
                     row["adm_loss"] = 100 * lost / V
             out.append(row)
     return pd.DataFrame(out), forms
+
+
+B2_FOLDER = "2026-10-10_scaling_scale64_B2_kv6500_rpi{r}"
+
+
+def collect_b2(date, fd):
+    """B2 (B1 + GAIE admission) gap against the same aggregate V* as fluid-dual, at every n B2 was run
+    (2 to 64). V* per n comes from the experiment-3 fluid solutions at the same rate per instance."""
+    params = yaml.safe_load(open(os.path.join(SPEC, "objective.yaml")))
+    out = []
+    for r, _, _ in LOADS:
+        folder = B2_FOLDER.format(r=r)
+        if not os.path.isdir(os.path.join(EXP, folder, "runs")):
+            continue
+        Vn = {int(x.n): x.V for _, x in fd[fd.load == r].iterrows()}
+        for n, g in run_values(folder, params).groupby("n"):
+            if int(n) not in Vn:
+                continue
+            V = Vn[int(n)]
+            gaps = 100 * (V - g.value.values) / V
+            k = len(gaps)
+            out.append({"load": r, "n": int(n), "seeds": k, "V": V, "B2": g.value.mean(), "gap": gaps.mean(),
+                        "gap_ci": analyze.t_crit(k) * gaps.std(ddof=1) / math.sqrt(k) if k > 1 else float("nan"),
+                        "gap_se": gaps.std(ddof=1) / math.sqrt(k) if k > 1 else float("nan")})
+    return pd.DataFrame(out)
+
+
+def fit_cnxlogn(n, y, se):
+    """weighted least squares of gap = C n^x log n on the gap scale (all points, negative ones too),
+    weights 1/se^2, by scipy curve_fit. The covariance is scaled by chi2_red (absolute_sigma=False), so a
+    fit worse than the seed noise gets a wider interval; 95 percent interval of x = x +- t(0.975, dof) sd.
+    Returns dict(C, x, lo, hi, chi2_red, dof)."""
+    from scipy import stats
+    from scipy.optimize import curve_fit
+    n, y, se = (np.asarray(v, float) for v in (n, y, se))
+    se = pd.Series(se).ffill().bfill().values  # a point with one seed borrows the SE of the next smaller n
+    f = lambda m, C, x: C * m ** x * np.log(m)  # noqa: E731
+    p, cov = curve_fit(f, n, y, p0=(1.0, -0.5), sigma=se, absolute_sigma=False, maxfev=50000)
+    dof = max(1, len(n) - 2)
+    red = float((((y - f(n, *p)) / se) ** 2).sum() / dof)
+    h = stats.t.ppf(0.975, dof) * math.sqrt(cov[1, 1])
+    return {"C": p[0], "x": p[1], "lo": p[1] - h, "hi": p[1] + h, "chi2_red": red, "dof": dof}
+
+
+POL = {"FD": ("fluid-dual", "#C0504D", "o"), "B2": ("B2 (B1 + GAIE admission)", "#2E75B6", "s")}
+
+
+def fig_fits(fd, b2, out):
+    """2 x 2 like the model draft's Figure 4: rows = loads; left = gap on a linear axis, right = log-log
+    with the fitted C n^x log n and its exponent."""
+    fig, axes = plt.subplots(2, 2, figsize=(13, 9.5), dpi=150)
+    fits = {}
+    for row, (r, label, _) in enumerate(LOADS):
+        for k, d in (("B2", b2), ("FD", fd)):
+            g = d[d.load == r].sort_values("n") if len(d) else d
+            if g is None or g.empty:
+                continue
+            name, col, mk = POL[k]
+            ax = axes[row, 0]
+            ci = g.gap_ci.fillna(0)
+            ax.plot(g.n, g.gap, marker=mk, ms=5, lw=2, color=col, label=name)
+            ax.fill_between(g.n, g.gap - ci, g.gap + ci, color=col, alpha=0.2, lw=0)
+            ax = axes[row, 1]
+            pos, neg = g[g.gap > 0], g[g.gap <= 0]
+            ax.plot(pos.n, pos.gap, marker=mk, ms=5, lw=2, color=col, label=name)
+            if len(neg):
+                ax.plot(neg.n, np.maximum(neg.gap.abs(), 1e-3), ls="none", marker=mk, ms=6, mfc="white", mec=col, mew=1.5,
+                        label=f"{name}: mean gap below 0, drawn at its absolute value")
+            ft = fit_cnxlogn(g.n, g.gap, g.gap_se)
+            fits[(r, k)] = ft
+            xx = np.geomspace(g.n.min(), g.n.max(), 100)
+            yy = ft["C"] * xx ** ft["x"] * np.log(xx)
+            ax.plot(xx[yy > 0], yy[yy > 0], ls="--", lw=1.4, color="black" if k == "FD" else "#555555",
+                    label=f"{name} fit: ${ft['C']:.2f}\\,n^{{{ft['x']:.2f}}}\\log n$")
+        for c in (0, 1):
+            ax = axes[row, c]
+            xstyle(ax, sorted(set(fd.n) | (set(b2.n) if len(b2) else set())))
+            ax.set_ylabel("relative gap in percent, $100\\,(V^* - V)/V^*$")
+        axes[row, 0].axhline(0, color="grey", lw=0.8, ls="--")
+        axes[row, 0].set_title(f"({2 * row + 1}) Relative gap, {label}", fontsize=10, loc="left", weight="bold")
+        axes[row, 1].set_yscale("log")
+        axes[row, 1].set_title(f"({2 * row + 2}) Rate of the gap, {label.split(',')[0]} (log-log)", fontsize=10, loc="left", weight="bold")
+        axes[row, 0].legend(frameon=False, fontsize=8)
+        axes[row, 1].legend(frameon=True, fontsize=7, loc="upper right")
+        txt = "\n".join(f"{POL[k][0]}: $C n^x \\log n$, $x$ = {fits[(r, k)]['x']:.3f}, 95% CI [{fits[(r, k)]['lo']:.2f}, {fits[(r, k)]['hi']:.2f}], "
+                        f"$\\chi^2_{{red}}$ = {fits[(r, k)]['chi2_red']:.1f}" for k in ("FD", "B2") if (r, k) in fits)
+        axes[row, 1].text(0.02, 0.03, txt, transform=axes[row, 1].transAxes, fontsize=7.5, va="bottom",
+                          bbox=dict(boxstyle="square", fc="white", ec="#999999"))
+    fig.tight_layout()
+    fig.savefig(out)
+    plt.close(fig)
+    return fits
 
 
 def fit_power(g):
@@ -226,6 +319,15 @@ def main():
     fits = fig_loglog(df, os.path.join(a.out, "exp3_loglog.png"))
     fig_revenue(df, os.path.join(a.out, "exp3_revenue.png"))
     has_adm = fig_admission(df, os.path.join(a.out, "exp3_admission.png"))
+    b2 = collect_b2(a.date, df)
+    b2.to_csv(os.path.join(a.out, "experiment3_B2_gap_vs_n.csv"), index=False)
+    cfits = fig_fits(df, b2, os.path.join(a.out, "exp3_fits.png"))
+    cfit_rows = "\n".join(
+        f"{r} & {POL[k][0]} & {int((df if k == 'FD' else b2).query('load == @r').n.min())} to "
+        f"{int((df if k == 'FD' else b2).query('load == @r').n.max())} & {v['C']:.3f} & {v['x']:.3f} & "
+        f"[{v['lo']:.3f}, {v['hi']:.3f}] & {v['chi2_red']:.2f} \\\\"
+        for (r, k), v in cfits.items())
+    print("C n^x log n fits:", {f"{r} {k}": {q: round(float(w), 3) for q, w in v.items()} for (r, k), v in cfits.items()})
     fit_rows = "\n".join(f"{r} & {f(v['slope'])} & {f(v['floor'], 3)} & {f(v['a'], 3)} & {f(v['plateau'], 3)} \\\\" for r, v in fits.items())
     stmt = ("The fluid problem is solved in its aggregate form by GPU type (index $j$ = GPU type with $N_j$ identical instances, "
             "load split equally within a type). Gurobi proves it optimal at every $n$ (in at most 4 s at $n = 1024$), and it lies "
@@ -247,6 +349,14 @@ Fluid-dual (Definition 1 of the model draft: accept a type-$i$ job iff $\max_j I
 
 The relative gap to optimality is $100\,(V^\star - V)/V^\star$, averaged over seeds.
 \section{Result}
+\subsection{Fit $C\,n^{x}\log n$ for fluid-dual and B2}
+Fit of $\text{gap}(n) = C\,n^{x}\log n$ to every point, on the gap scale, weighted by $1/\text{SE}^2$ (SE = standard error of the mean gap over seeds), so points with a gap at or below zero enter as well. Fitted with scipy's curve\_fit; the covariance is scaled by $\chi^2_{red}$, so a fit worse than the seed noise gets a wider interval; 95 percent interval of $x$ = $\hat x \pm t_{0.975,\,\text{points} - 2}\,\text{sd}(\hat x)$. $\chi^2_{red} = \chi^2_{\min}/(\text{points} - 2)$: about 1 means the curve fits within the seed noise; far above 1 means it does not. B2 was run at $n = 2$ to 64 (2026-10-10, 20 seeds for $n \le 16$, 10 above); its gap is against the same aggregate $V^\star$.
+\begin{figure}[H]\centering\includegraphics[width=\textwidth]{exp3_fits.png}\caption{Left: relative gap against $n$ (bands 95 percent over seeds). Right: the same on log-log axes with the fitted $C\,n^{x}\log n$ (dashed); open markers are mean gaps at or below zero, drawn at their absolute value.}\end{figure}
+\begin{center}\small\begin{tabular}{llrrrrr}\toprule
+req/s per inst. & policy & $n$ & $C$ & $x$ & 95\% CI of $x$ & $\chi^2_{red}$ \\ \midrule
+""" + cfit_rows + r"""
+\bottomrule\end{tabular}\end{center}
+\subsection{Other fits of the fluid-dual gap}
 \begin{figure}[H]\centering\includegraphics[width=\textwidth]{exp3_loglog.png}\caption{Relative gap of fluid-dual to the fluid optimum against $n$, log-log axes; bands 95 percent over seeds. Dashed: power fit over the positive points. Dash-dot: floor fit $c + a\,n^{-1/2}$.}\end{figure}
 \begin{center}\small\begin{tabular}{lrrrr}\toprule
 req/s per inst. & power-fit slope & floor $c$ (\%) & $a$ & mean gap over $n \ge 64$ (\%) \\ \midrule
