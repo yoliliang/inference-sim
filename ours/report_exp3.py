@@ -38,7 +38,7 @@ LOADS = [("11", "underloaded, 11 req/s per instance (0.82 of fluid capacity)", "
 TYPES = [("type1", "chat"), ("type2", "RAG"), ("type3", "long gen.")]
 
 
-def collect(date, kind="fluid_dual"):
+def collect(date, kind="fluid_dual", original_grid=False):
     params = yaml.safe_load(open(os.path.join(SPEC, "objective.yaml")))
     out, forms = [], set()
     for r, _, _ in LOADS:
@@ -53,6 +53,9 @@ def collect(date, kind="fluid_dual"):
             fl[m["instances"]], fty[m["instances"]] = m, d["types"]
             forms.add(m.get("formulation"))
         rv = run_values(folder, params)
+        if original_grid and not rv.empty:  # experiment 3 as designed: n = 2^k, seeds 1..10 (n <= 64) or 1..3
+            pow2 = rv.n.apply(lambda m: m >= 2 and (int(m) & (int(m) - 1)) == 0)
+            rv = rv[pow2 & (rv.seed <= np.where(rv.n <= 64, 10, 3))]
         if rv.empty:
             continue
         summ = pd.read_csv(os.path.join(path, "summary.csv")) if os.path.exists(os.path.join(path, "summary.csv")) else None
@@ -328,9 +331,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
     ap.add_argument("--date", default="2026-10-11")
+    ap.add_argument("--original-grid", action="store_true",
+                    help="only the experiment-3 design (n = 2^k, seeds 1..10 for n <= 64, 1..3 above), ignoring runs added later (experiment 3b)")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
-    df, forms = collect(a.date)
+    df, forms = collect(a.date, original_grid=a.original_grid)
     if df.empty:
         sys.exit("no runs yet")
     df.to_csv(os.path.join(a.out, "experiment3_gap_vs_n.csv"), index=False)
@@ -338,7 +343,7 @@ def main():
     fig_revenue(df, os.path.join(a.out, "exp3_revenue.png"))
     has_adm = fig_admission(df, os.path.join(a.out, "exp3_admission.png"))
     # second policy: the static fluid policy (B2 left out at the user's request; collect_b2 kept for reuse)
-    st, _ = collect("2026-10-12", kind="fluid_static")
+    st, _ = collect("2026-10-12", kind="fluid_static", original_grid=a.original_grid)
     b2 = st
     if len(st):
         st.to_csv(os.path.join(a.out, "experiment3_static_gap_vs_n.csv"), index=False)
