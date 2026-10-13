@@ -38,11 +38,11 @@ LOADS = [("11", "underloaded, 11 req/s per instance (0.82 of fluid capacity)", "
 TYPES = [("type1", "chat"), ("type2", "RAG"), ("type3", "long gen.")]
 
 
-def collect(date):
+def collect(date, kind="fluid_dual"):
     params = yaml.safe_load(open(os.path.join(SPEC, "objective.yaml")))
     out, forms = [], set()
     for r, _, _ in LOADS:
-        folder = f"{date}_scaling_scale1024_fluid_dual_kv6500_rpi{r}"
+        folder = f"{date}_scaling_scale1024_{kind}_kv6500_rpi{r}"
         path = os.path.join(EXP, folder)
         if not os.path.isdir(os.path.join(path, "runs")):
             continue
@@ -127,16 +127,17 @@ def fit_cnxlogn(n, y, se):
     return {"C": p[0], "x": p[1], "lo": p[1] - h, "hi": p[1] + h, "chi2_red": red, "dof": dof}
 
 
-POL = {"FD": ("fluid-dual", "#C0504D", "o"), "B2": ("B2 (B1 + GAIE admission)", "#2E75B6", "s")}
+POL = {"FD": ("fluid-dual", "#C0504D", "o"), "B2": ("B2 (B1 + GAIE admission)", "#2E75B6", "s"),
+       "ST": ("static fluid", "#2E75B6", "s")}
 
 
-def fig_fits(fd, b2, out):
+def fig_fits(fd, b2, out, other="ST"):
     """2 x 2 like the model draft's Figure 4: rows = loads; left = gap on a linear axis, right = log-log
     with the fitted C n^x log n and its exponent."""
     fig, axes = plt.subplots(2, 2, figsize=(13, 9.5), dpi=150)
     fits = {}
     for row, (r, label, _) in enumerate(LOADS):
-        for k, d in (("B2", b2), ("FD", fd)):
+        for k, d in ((other, b2), ("FD", fd)):
             g = d[d.load == r].sort_values("n") if len(d) else d
             if g is None or g.empty:
                 continue
@@ -168,7 +169,7 @@ def fig_fits(fd, b2, out):
         axes[row, 0].legend(frameon=False, fontsize=8)
         axes[row, 1].legend(frameon=True, fontsize=7, loc="upper right")
         txt = "\n".join(f"{POL[k][0]}: $C n^x \\log n$, $x$ = {fits[(r, k)]['x']:.3f}, 95% CI [{fits[(r, k)]['lo']:.2f}, {fits[(r, k)]['hi']:.2f}], "
-                        f"$\\chi^2_{{red}}$ = {fits[(r, k)]['chi2_red']:.1f}" for k in ("FD", "B2") if (r, k) in fits)
+                        f"$\\chi^2_{{red}}$ = {fits[(r, k)]['chi2_red']:.1f}" for k in ("FD", other) if (r, k) in fits)
         axes[row, 1].text(0.02, 0.03, txt, transform=axes[row, 1].transAxes, fontsize=7.5, va="bottom",
                           bbox=dict(boxstyle="square", fc="white", ec="#999999"))
     fig.tight_layout()
@@ -306,6 +307,23 @@ def table_adm(df):
             + "\n".join(rows) + "\n\\bottomrule\\end{tabular}\\end{center}")
 
 
+def table_static(fd, st):
+    """fluid-dual against the static fluid policy at every n both were run."""
+    if st is None or not len(st):
+        return ""
+    rows = []
+    for r, _, _ in LOADS:
+        for _, x in st[st.load == r].sort_values("n").iterrows():
+            y = fd[(fd.load == r) & (fd.n == x.n)]
+            g = y.gap.iloc[0] if len(y) else float("nan")
+            t = y.ttft.iloc[0] / 1000 if len(y) and "ttft" in y else float("nan")
+            rows.append(" & ".join([r, str(int(x.n)), f(x.gap, 2), f(x.gap_ci, 2), f(g, 3), f(x.get("ttft", float("nan")) / 1000, 2),
+                                    f(t, 3), f(x.get("sim_adm_type3"), 1)]) + r" \\")
+    return ("\\begin{center}\\small\\begin{tabular}{lrrrrrrr}\\toprule\n"
+            r"req/s per inst. & $n$ & static gap \% & $\pm$ 95\% & fluid-dual gap \% & static TTFT (s) & fluid-dual TTFT (s) & static type-3 accepted \% \\ \midrule" "\n"
+            + "\n".join(rows) + "\n\\bottomrule\\end{tabular}\\end{center}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
@@ -319,11 +337,15 @@ def main():
     fits = fig_loglog(df, os.path.join(a.out, "exp3_loglog.png"))
     fig_revenue(df, os.path.join(a.out, "exp3_revenue.png"))
     has_adm = fig_admission(df, os.path.join(a.out, "exp3_admission.png"))
-    b2 = pd.DataFrame()  # the user asked to leave B2 out of this experiment; collect_b2 kept for reuse
+    # second policy: the static fluid policy (B2 left out at the user's request; collect_b2 kept for reuse)
+    st, _ = collect("2026-10-12", kind="fluid_static")
+    b2 = st
+    if len(st):
+        st.to_csv(os.path.join(a.out, "experiment3_static_gap_vs_n.csv"), index=False)
     cfits = fig_fits(df, b2, os.path.join(a.out, "exp3_fits.png"))
     cfit_rows = "\n".join(
-        f"{r} & {POL[k][0]} & {int((df if k == 'FD' else b2).query('load == @r').n.min())} to "
-        f"{int((df if k == 'FD' else b2).query('load == @r').n.max())} & {v['C']:.3f} & {v['x']:.3f} & "
+        f"{r} & {POL[k][0]} & {int((df if k == 'FD' else st).query('load == @r').n.min())} to "
+        f"{int((df if k == 'FD' else st).query('load == @r').n.max())} & {v['C']:.3f} & {v['x']:.3f} & "
         f"[{v['lo']:.3f}, {v['hi']:.3f}] & {v['chi2_red']:.2f} \\\\"
         for (r, k), v in cfits.items())
     print("C n^x log n fits:", {f"{r} {k}": {q: round(float(w), 3) for q, w in v.items()} for (r, k), v in cfits.items()})
@@ -344,17 +366,20 @@ def main():
 \section{What was run}
 Fluid-dual (Definition 1 of the model draft: accept a type-$i$ job iff $\max_j I_{ij}(t) \ge 0$, route to the largest index; $\eta = V^\star/J$) on the baseline instance: H100 GPUs, 6,500 KV blocks each, Qwen3-14B, type shares 50/35/15, $\pi_{in} = 1$, $\pi_{out} = 4$, $h = 0.03$. Two loads, 11 and 14.4 req/s per instance (0.82 and 1.07 times the fluid capacity of 13.46 req/s per instance). System scale $n$ = 2, 4, 8, \dots, 1024 with the arrival rate proportional to $n$; 10 seeds for $n \le 64$ and 3 for $n \ge 128$. Horizon 1,200 s, statistics over arrivals in [500, 1,100) s, revenue = eq. (10) per second of the window.
 
+\textbf{Benchmark: the static fluid policy.} The same fluid solution with no state feedback: a type-$i$ arrival is accepted with probability $\sum_j x^\star_{ij}/\lambda_i$ and routed to instance $j$ with probability $x^\star_{ij}/\sum_{j'} x^\star_{ij'}$ (Bernoulli thinning and splitting, so each $(i, j)$ stream is Poisson with rate $x^\star_{ij}$). Same loads, $n = 2$ to 512, same seeds as fluid-dual (common random numbers).
+
 \textbf{Fluid program.} """ + stmt + r"""
 
 The relative gap to optimality is $100\,(V^\star - V)/V^\star$, averaged over seeds.
 \section{Result}
-\subsection{Fit $C\,n^{x}\log n$ for fluid-dual}
+\subsection{Fit $C\,n^{x}\log n$ for fluid-dual and the static fluid policy}
 Fit of $\text{gap}(n) = C\,n^{x}\log n$ to every point, on the gap scale, weighted by $1/\text{SE}^2$ (SE = standard error of the mean gap over seeds), so points with a gap at or below zero enter as well. Fitted with scipy's curve\_fit; the covariance is scaled by $\chi^2_{red}$, so a fit worse than the seed noise gets a wider interval; 95 percent interval of $x$ = $\hat x \pm t_{0.975,\,\text{points} - 2}\,\text{sd}(\hat x)$. $\chi^2_{red} = \chi^2_{\min}/(\text{points} - 2)$: about 1 means the curve fits within the seed noise; far above 1 means it does not.
 \begin{figure}[H]\centering\includegraphics[width=\textwidth]{exp3_fits.png}\caption{Left: relative gap against $n$ (bands 95 percent over seeds). Right: the same on log-log axes with the fitted $C\,n^{x}\log n$ (dashed); open markers are mean gaps at or below zero, drawn at their absolute value.}\end{figure}
 \begin{center}\small\begin{tabular}{llrrrrr}\toprule
 req/s per inst. & policy & $n$ & $C$ & $x$ & 95\% CI of $x$ & $\chi^2_{red}$ \\ \midrule
 """ + cfit_rows + r"""
 \bottomrule\end{tabular}\end{center}
+""" + table_static(df, st) + r"""
 \subsection{Other fits of the fluid-dual gap}
 \begin{figure}[H]\centering\includegraphics[width=\textwidth]{exp3_loglog.png}\caption{Relative gap of fluid-dual to the fluid optimum against $n$, log-log axes; bands 95 percent over seeds. Dashed: power fit over the positive points. Dash-dot: floor fit $c + a\,n^{-1/2}$.}\end{figure}
 \begin{center}\small\begin{tabular}{lrrrr}\toprule
