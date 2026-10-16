@@ -207,7 +207,7 @@ def fluid_quantities(x, c, M, b):
     return dict(rho=rho, ell=ell, g=g, value=value, cstar=cstar, K=K, W0=W0, S0=S0, loadM=loadM, loadB=loadB)
 
 
-def multipliers(x, c, q, lam, workdir, name, rep_of=None):
+def multipliers(x, c, q, lam, workdir, name, rep_of=None, l2=False):
     """KKT multipliers at x* by least violation. x* comes from a global solve with a finite
     optimality gap, so it satisfies (31) and complementary slackness only approximately;
     hard-zeroing the multipliers of nearly tight constraints can make the system infeasible.
@@ -219,7 +219,9 @@ def multipliers(x, c, q, lam, workdir, name, rep_of=None):
     among exact solutions. The largest residual is reported.
     rep_of[j] (aggregate formulation): the representative column of instance j's GPU type. The
     instances of a type are identical at the equal split, so their rows coincide; the LP is
-    written for the representatives only (it stays small at any n) and the prices are copied."""
+    written for the representatives only (it stays small at any n) and the prices are copied.
+    l2: among exact solutions take the smallest Euclidean norm of all multipliers (a quadratic
+    tie-break, the convention of the optimistic test policy) instead of the smallest sum of prices."""
     I, J = x.shape
     rep_of = list(range(J)) if rep_of is None else list(rep_of)
     cols = sorted(set(rep_of))
@@ -232,13 +234,16 @@ def multipliers(x, c, q, lam, workdir, name, rep_of=None):
     for i in range(I):
         obj.append(term(1e2 * s_flow[i], f"nu_{i}"))
     for j in cols:
-        obj.append(term(1e2 * s_mem[j] + 1e-3, f"gm_{j}"))
-        obj.append(term(1e2 * s_tok[j] + 1e-3, f"gb_{j}"))
+        obj.append(term(1e2 * s_mem[j] + (0.0 if l2 else 1e-3), f"gm_{j}"))
+        obj.append(term(1e2 * s_tok[j] + (0.0 if l2 else 1e-3), f"gb_{j}"))
     for i in range(I):
         for j in cols:
             obj.append(f"+ 10000 ep_{i}_{j}")
             if x[i, j] > tol_x:
                 obj.append(f"+ 10000 em_{i}_{j}")
+    if l2:
+        sq = [f"nu_{i} ^ 2" for i in range(I)] + [f"gm_{j} ^ 2" for j in cols] + [f"gb_{j} ^ 2" for j in cols]
+        obj.append("+ [ " + " + ".join(f"0.002 {v}" for v in sq) + " ] / 2")
     lines = ["Minimize", " obj: " + " ".join(obj), "Subject To"]
     for i in range(I):
         for j in cols:
@@ -272,6 +277,10 @@ def main():
     ap.add_argument("--workdir", default=os.path.join(common.HERE, "work"))
     ap.add_argument("--out", required=True)
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--optimistic", action="store_true",
+                    help="solve the optimistic benchmark (draft eq. opt-program) by GPU type instead of (28) and write its "
+                         "marginal charges (opt-marginal), minimum-norm multipliers and targets (opt-targets); eta0 stays the "
+                         "reference V*/J")
     ap.add_argument("--aggregate", action="store_true",
                     help="solve the fluid problem aggregated by GPU type (index j = GPU type with N_j identical instances, "
                          "load split equally within a type; proven optimal in well under a second) and expand it to "
@@ -290,7 +299,35 @@ def main():
     b = float(a.budget)
     tag = os.path.splitext(os.path.basename(a.out))[0]
 
-    if a.aggregate:
+    extra_meta, opt = {}, None
+    if a.optimistic:
+        # optimistic benchmark (draft, Section "An Optimistic Benchmark and a Policy Test"): concave,
+        # solved by GPU type (the equal split is a global optimum); the reference program (28) is
+        # solved too, for V* and for the policy's gain eta = V*/J (the draft keeps the reference gain)
+        import aggregate as agg_mod
+        import optimistic as opt_mod
+        groups = agg_mod.groups_of(gpus)
+        v_ref, _, st_ref = agg_mod.solve_aggregate(types, groups, lam, a.blocks, fit, a.budget, a.block_size, name=tag + "_ref", workdir=a.workdir)
+        opt = opt_mod.solve_optimistic(types, groups, lam, a.blocks, fit, a.budget, a.block_size, name=tag + "_opt", workdir=a.workdir)
+        cols, rep_of, cU, Hj = [], [], [], []
+        for k, (g, N) in enumerate(groups):
+            xk = opt["X"][:, k] / N
+            rep_of += [len(cols)] * N
+            cols += [xk] * N
+            cU += [opt_mod.marginal(opt["consts"][k], xk)] * N
+            Hj += [opt_mod.per_instance_cost(opt["consts"][k], xk)] * N
+        x = np.array(cols).T
+        c = coefficients(types, gpus, M, b, fit)
+        bound = opt["dual"]
+        gap = (bound - opt["value"]) / abs(opt["value"]) if bound is not None and opt["value"] else None
+        status = ("optimal" if opt["status"] == "optimal" else "not proven") + " (optimistic, aggregate by GPU type)"
+        formulation = "optimistic, aggregate by GPU type"
+        extra_meta = {"reference_value": v_ref, "reference_status": st_ref, "optimistic_value": opt["value"],
+                      "barrier_primal": opt["primal"], "barrier_dual": opt["dual"], "primal_violation": opt["violation"],
+                      "optimistic_eta0": opt["value"] / len(gpus),
+                      "eta_note": "eta0 = reference V*/J (the draft keeps the reference policy's gain); optimistic_eta0 = U_opt/J",
+                      "g": [float(v) for v in opt["consts"][0]["g"]]}
+    elif a.aggregate:
         import aggregate as agg_mod
         groups = agg_mod.groups_of(gpus)
         v_agg, Xg, st = agg_mod.solve_aggregate(types, groups, lam, a.blocks, fit, a.budget, a.block_size, name=tag + "_agg", workdir=a.workdir)
@@ -308,15 +345,22 @@ def main():
         formulation = "per instance"
         rep_of = None
     q = fluid_quantities(x, c, M, b)
-    nu, gm, gb, idx, resid = multipliers(x, c, q, lam, a.workdir, tag + "_kkt", rep_of)
+    if opt is not None:  # optimistic: its value, marginal charges (opt-marginal) and holding charges
+        q["cstar"] = np.array(cU).T
+        q["value"] = opt["value"]
+        q["g"] = np.array(Hj)
+    nu, gm, gb, idx, resid = multipliers(x, c, q, lam, a.workdir, tag + "_kkt", rep_of, l2=a.optimistic)
     J = len(gpus)
+    eta0 = extra_meta["reference_value"] / J if opt is not None else q["value"] / J
     out = {
         "meta": {
             "created": dt.datetime.now().isoformat(timespec="seconds"),
             "rate": a.rate, "instances": J, "blocks": a.blocks, "block_size": a.block_size, "budget": a.budget,
-            "value": q["value"], "bound": bound, "gap": gap, "status": status, "eta0": q["value"] / J,
+            "value": q["value"], "bound": bound, "gap": gap, "status": status, "eta0": eta0,
             "kkt_residual": resid, "formulation": formulation,
-            "solver": "gurobi_cl NonConvex=2, " + ("aggregate solved to MIPGap 1e-9" if a.aggregate else f"MIPGap {GAP}"),
+            "solver": ("gurobi_cl barrier (convex, rotated second-order cone), BarQCPConvTol 1e-8" if a.optimistic else
+                       "gurobi_cl NonConvex=2, " + ("aggregate solved to MIPGap 1e-9" if a.aggregate else f"MIPGap {GAP}")),
+            **extra_meta,
             "spec": os.path.relpath(a.spec, common.ROOT).replace(os.sep, "/"),
             "units": "rates per second, times in seconds, memory and budget in tokens, rewards in objective.yaml units (per 1000 tokens)",
         },

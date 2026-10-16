@@ -136,6 +136,10 @@ PROFILES = {
     # static fluid policy (benchmark): same fluid solution, no state feedback; a type-i arrival
     # is accepted with probability sum_j x*_ij / lambda_i and routed to j with probability
     # proportional to x*_ij (BLIS --fluid-mode static)
+    # optimistic fluid-dual (draft, Section "An Optimistic Benchmark and a Policy Test"): the same index
+    # policy, built from the optimistic benchmark (solve.py --optimistic) instead of problem (28)
+    "fluid_dual_optimistic": ["--shared-queue-push=false", "--routing-policy", "fluid-dual",
+                              *with_admission(ENGINE_H100, "fluid-dual")],
     "fluid_static": ["--shared-queue-push=false", "--routing-policy", "fluid-dual",
                      *with_admission(ENGINE_H100, "fluid-dual"), "--fluid-mode", "static"],
     "harness": ["--shared-queue-push=false", "--routing-policy", "weighted",
@@ -297,7 +301,8 @@ def main():
         "keep_paths": a.keep_paths, "seeds_from_n": a.seeds_from_n,
         "blocks": a.blocks, "profile": a.profile, "pools": a.pools,
         "fluid_gap": a.fluid_gap if a.profile.startswith("fluid") else None,
-        "fluid_formulation": ("per instance" if a.fluid_per_instance else "aggregate by GPU type") if a.profile.startswith("fluid") else None, "objective": a.objective,
+        "fluid_formulation": ("optimistic, aggregate by GPU type" if a.profile == "fluid_dual_optimistic" else
+                              "per instance" if a.fluid_per_instance else "aggregate by GPU type") if a.profile.startswith("fluid") else None, "objective": a.objective,
         "base_flags": BASE_FLAGS + PROFILES[a.profile] + mode_flags,
         "extra_flags": a.extra,
         "rates": rates, "seeds": seeds, "spec_template": a.spec,
@@ -348,7 +353,10 @@ def main():
             if not (a.resume and os.path.exists(fluid_yaml)):
                 t0 = time.time()
                 start = ["--start", prev_fluid] if scaling and prev_fluid and a.fluid_per_instance else []
-                start += [] if a.fluid_per_instance else ["--aggregate"]
+                if a.profile == "fluid_dual_optimistic":
+                    start = ["--optimistic"]
+                else:
+                    start += [] if a.fluid_per_instance else ["--aggregate"]
                 subprocess.run([sys.executable, os.path.join(HERE, "fluid", "solve.py"), "--rate", str(rate),
                                 "--instances", inst, "--blocks", str(a.blocks), "--spec", a.spec, "--objective", a.objective,
                                 "--time-limit", str(a.fluid_time_limit), "--out", fluid_yaml, "--quiet", *start,
