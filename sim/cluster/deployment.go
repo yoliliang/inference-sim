@@ -130,6 +130,7 @@ type DeploymentConfig struct {
 	FluidMode     string  // index (default, current draft), rate-tracking, or static (benchmark: thinning and splitting at x*)
 	FluidKScale   float64 // k_ij = FluidKScale * lambda_i / r_i
 	FluidWeights  string  // projection weights: inverse-rate (default) or uniform
+	FluidBufferTokens float64 // memory buffer B in tokens (beta^M_j = eta B / M_j); 0 = none
 
 	// ours: Mooncake admission parameters. Only used when AdmissionPolicy = "mooncake".
 	MooncakeMode            string  // "now" (Early Rejection) or "predict" (Early Rejection based on Prediction)

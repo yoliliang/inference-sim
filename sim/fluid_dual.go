@@ -15,6 +15,11 @@ package sim
 //     splitting, so each (i, j) stream is Poisson with rate x*_ij). Draws come from a dedicated
 //     seeded stream (FluidDualOptions.RNG), so runs are reproducible.
 //
+// Memory buffer (fluid-dual with buffer, 2026-10-16): FluidDualOptions.BufferTokens = B adds a
+// constant beta^M_j = eta B / M_j to every memory price, gammaM_j(t) = [gammaM*_j + beta^M_j +
+// eta (K_j(t) - K*_j) / M_j]^+, i.e. the memory target moves down by B tokens. B = 0 (default)
+// is the unbuffered policy, bit for bit.
+//
 // index and rate-tracking use the same state prices and indices. Batching and eviction (parts 2 and 3
 // of the definition) are vLLM's default rules, which the simulator already executes: every
 // prefilled job continues, stage-0 jobs join in arrival order while the token budget and the
@@ -147,6 +152,9 @@ type FluidDualState func(instanceID string) (kvTokens, stage0Prompt int64, ok bo
 type FluidDualOptions struct {
 	Mode     string     // "index" (default), "rate-tracking" or "static"
 	RNG      *rand.Rand // random stream of the static mode (required there, unused otherwise)
+	// BufferTokens is the memory buffer B in tokens: beta^M_j = eta B / M_j is added to the
+	// memory price of every instance (0 = no buffer).
+	BufferTokens float64
 	EtaScale float64    // eta = EtaScale * eta0
 	KScale   float64 // k_ij = KScale * lambda_i / r_i
 	Weights  string  // projection weights: "inverse-rate" (omega_ij = 1/lambda_i, default) or "uniform" (omega_ij = 1)
@@ -174,6 +182,8 @@ type FluidDual struct {
 	live    []bool
 	scratch struct{ u, a, w []float64 }
 	rng     *rand.Rand // static mode
+	bufM    []float64  // beta^M_j = eta B / M_j, the memory buffer added to every memory price
+	bufTok  float64
 	admitP  []float64  // static mode: acceptance probability per type
 
 	// diagnostics
@@ -199,6 +209,9 @@ func NewFluidDual(p *FluidDualParams, o FluidDualOptions) *FluidDual {
 	}
 	if o.Mode != "index" && o.Mode != "rate-tracking" && o.Mode != "static" {
 		panic(fmt.Sprintf("fluid-dual: unknown mode %q (index, rate-tracking, static)", o.Mode))
+	}
+	if o.BufferTokens < 0 || math.IsNaN(o.BufferTokens) {
+		panic(fmt.Sprintf("fluid-dual: memory buffer must be >= 0 tokens, got %v", o.BufferTokens))
 	}
 	if o.Mode == "static" && o.RNG == nil {
 		panic("fluid-dual: static mode needs a random stream (FluidDualOptions.RNG)")
@@ -236,6 +249,10 @@ func NewFluidDual(p *FluidDualParams, o FluidDualOptions) *FluidDual {
 	n := max(nI, nJ)
 	f.scratch.u, f.scratch.a, f.scratch.w = make([]float64, n), make([]float64, n), make([]float64, n)
 	f.rng, f.admitP = o.RNG, make([]float64, nI)
+	f.bufM, f.bufTok = make([]float64, nJ), o.BufferTokens
+	for j, inst := range p.Instances {
+		f.bufM[j] = f.eta * o.BufferTokens / inst.M
+	}
 	for i := 0; i < nI; i++ {
 		tot := 0.0
 		for j := 0; j < nJ; j++ {
@@ -260,7 +277,7 @@ func (f *FluidDual) Params() *FluidDualParams { return f.p }
 // Index returns I_ij(t) of type i on parameter instance j for the given live state.
 func (f *FluidDual) Index(i, j int, kvTokens, stage0Prompt int64) float64 {
 	inst := &f.p.Instances[j]
-	gm := math.Max(0, inst.GammaM+f.eta*(float64(kvTokens)-inst.KVTarget)/inst.M)
+	gm := math.Max(0, inst.GammaM+f.bufM[j]+f.eta*(float64(kvTokens)-inst.KVTarget)/inst.M)
 	gb := math.Max(0, inst.GammaB+f.eta*(float64(stage0Prompt)-inst.Stage0Target)/inst.B)
 	return f.r[i] - inst.Types[f.p.Types[i].Name].C - gm*f.aM[i][j] - gb*f.aB[i][j]
 }
@@ -401,6 +418,7 @@ func (f *FluidDual) solve1D(u, a, w []float64, rhs float64) float64 {
 type FluidDualReport struct {
 	Mode         string                      `json:"mode"`
 	Eta          float64                     `json:"eta"`
+	BufferTokens float64                     `json:"buffer_tokens"` // memory buffer B; beta^M_j = eta B / M_j
 	Accepted     map[string]int64            `json:"accepted"`
 	Rejected     map[string]int64            `json:"rejected"`
 	Dispatched   map[string]map[string]int64 `json:"dispatched"` // type -> instance -> count
@@ -412,7 +430,7 @@ type FluidDualReport struct {
 
 // Report returns the run diagnostics.
 func (f *FluidDual) Report() *FluidDualReport {
-	r := &FluidDualReport{Mode: f.mode, Eta: f.eta, Accepted: f.Accepted, Rejected: f.Rejected, Dispatched: f.Dispatched,
+	r := &FluidDualReport{Mode: f.mode, Eta: f.eta, BufferTokens: f.bufTok, Accepted: f.Accepted, Rejected: f.Rejected, Dispatched: f.Dispatched,
 		Projections: f.ProjCalls, MaxViolation: f.ProjMaxGap, FluidValue: f.p.Meta.Value}
 	if f.ProjCalls > 0 {
 		r.MeanSweeps = float64(f.ProjSweeps) / float64(f.ProjCalls)

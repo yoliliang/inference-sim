@@ -110,6 +110,7 @@ var (
 	fluidMode               string             // ours: fluid-dual definition (index | rate-tracking | static)
 	fluidKScale             float64            // ours: k_ij = scale * lambda_i / r_i
 	fluidWeights            string             // ours: projection weights
+	fluidBufferTokens       float64            // ours: fluid-dual memory buffer B (tokens)
 	mooncakeMode            string             // ours: Mooncake admission mode (now | predict)
 	mooncakeTTFTTargetS     float64            // ours
 	mooncakeTBTTargetMs     float64            // ours
@@ -1567,6 +1568,7 @@ func registerSimConfigFlags(cmd *cobra.Command) {
 	cmd.Flags().Float64Var(&fluidEtaScale, "fluid-eta-scale", 1.0, "ours: fluid-dual responsiveness eta = scale * eta0, eta0 = V*/J of the fluid solution")
 	cmd.Flags().StringVar(&fluidMode, "fluid-mode", "index", "ours: fluid-dual definition: index (accept iff max_j I_ij >= 0, route to the largest index; current draft) or rate-tracking (projection, admission accumulator, routing deficits; intermediate draft) or static (benchmark: accept type i with probability sum_j x*_ij / lambda_i, route to j with probability proportional to x*_ij)")
 	cmd.Flags().Float64Var(&fluidKScale, "fluid-k-scale", 1.0, "ours: fluid-dual response coefficients k_ij = scale * lambda_i / r_i (index change to provisional-rate change, eq. 34)")
+	cmd.Flags().Float64Var(&fluidBufferTokens, "fluid-buffer-tokens", 0, "ours: fluid-dual memory buffer B in tokens: beta^M_j = eta B / M_j is added to every memory price, moving the memory target down by B tokens (0 = none)")
 	cmd.Flags().StringVar(&fluidWeights, "fluid-weights", "inverse-rate", "ours: fluid-dual projection weights omega_ij: inverse-rate (1/lambda_i) or uniform (1)")
 	cmd.Flags().StringVar(&wakeRule, "wake-rule", "fastest-first", "ours: with --shared-queue-push, which idle instance is offered a step when the shared queue gains a request or capacity is freed: fastest-first (shortest reference step time, index order among equals), lowest-index, round-robin")
 	cmd.Flags().StringVar(&setPolicy, "set-policy", "fcfs-pool", "ours: set policy of the pooled batch formation: fcfs-pool (own preempted requests first, then the shared queue in arrival order, stop at the first that does not fit)")
@@ -2621,6 +2623,7 @@ var runCmd = &cobra.Command{
 			FluidMode:                       fluidMode,                        // ours
 			FluidKScale:                     fluidKScale,                      // ours
 			FluidWeights:                    fluidWeights,                     // ours
+			FluidBufferTokens:               fluidBufferTokens,                // ours
 			SnapshotRefreshInterval:         snapshotRefreshInterval,
 			CacheSignalDelay:                cacheSignalDelay,
 			PrefillInstances:                prefillInstances,

@@ -62,7 +62,8 @@ def solve_aggregate(types, groups, lam, blocks, fit, budget=8192, block_size=16,
         f = fit[gpu]
         w = f["taup"] * P + f["taukv"] * kap
         value += float(r @ X[:, j] - f["tau0"] * (d @ X[:, j]) / (1 - (w @ X[:, j]) / N))
-    return value, X, ("optimal" if "Optimal solution found" in log else "not proven")
+    # nonlinear (bilinear) solves report "Optimal solution found"; a linear one (h = 0) "Optimal objective"
+    return value, X, ("optimal" if ("Optimal solution found" in log or "Optimal objective" in log) else "not proven")
 
 
 def groups_of(gpus):

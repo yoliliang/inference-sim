@@ -140,6 +140,14 @@ PROFILES = {
     # policy, built from the optimistic benchmark (solve.py --optimistic) instead of problem (28)
     "fluid_dual_optimistic": ["--shared-queue-push=false", "--routing-policy", "fluid-dual",
                               *with_admission(ENGINE_H100, "fluid-dual")],
+    # fluid-dual with buffer: fluid-dual plus a constant memory buffer beta^M_j = eta B / M_j in every
+    # memory price (B from --fluid-buffer-tokens, required > 0)
+    "fluid_dual_buffer": ["--shared-queue-push=false", "--routing-policy", "fluid-dual",
+                          *with_admission(ENGINE_H100, "fluid-dual")],
+    # fluid-dual blind: the same index policy built from problem (28) with every holding cost set to
+    # zero (solve.py --blind); evaluated with the true objective
+    "fluid_dual_blind": ["--shared-queue-push=false", "--routing-policy", "fluid-dual",
+                         *with_admission(ENGINE_H100, "fluid-dual")],
     "fluid_static": ["--shared-queue-push=false", "--routing-policy", "fluid-dual",
                      *with_admission(ENGINE_H100, "fluid-dual"), "--fluid-mode", "static"],
     "harness": ["--shared-queue-push=false", "--routing-policy", "weighted",
@@ -233,6 +241,8 @@ def main():
                          "statistics come from the window block either way")
     ap.add_argument("--objective", default=os.path.join(HERE, "specs", "objective.yaml"),
                     help="fluid_dual profile: prices and holding costs used by the fluid solve")
+    ap.add_argument("--fluid-buffer-tokens", type=float, default=0.0,
+                    help="fluid_dual_buffer profile: memory buffer B in tokens (beta^M_j = eta B / M_j)")
     ap.add_argument("--fluid-per-instance", action="store_true",
                     help="fluid_dual profile: solve the per-instance fluid problem (28) instead of the default aggregate by GPU type")
     ap.add_argument("--fluid-gap", type=float, default=1e-4,
@@ -258,6 +268,8 @@ def main():
                     help="skip runs whose .json.gz already exists (keeps the existing manifest)")
     ap.add_argument("extra", nargs="*", help="extra BLIS flags after --")
     a = ap.parse_args()
+    if a.profile == "fluid_dual_buffer" and a.fluid_buffer_tokens <= 0:
+        sys.exit("profile fluid_dual_buffer needs --fluid-buffer-tokens > 0")
     if a.profile == "B2" and "sheddable" not in os.path.basename(a.spec):
         sys.exit("profile B2 needs a workload spec whose types are sheddable, e.g. --spec ours/specs/types3_sheddable.yaml")
 
@@ -301,6 +313,7 @@ def main():
         "keep_paths": a.keep_paths, "seeds_from_n": a.seeds_from_n,
         "blocks": a.blocks, "profile": a.profile, "pools": a.pools,
         "fluid_gap": a.fluid_gap if a.profile.startswith("fluid") else None,
+        "fluid_buffer_tokens": a.fluid_buffer_tokens if a.profile == "fluid_dual_buffer" else None,
         "fluid_formulation": ("optimistic, aggregate by GPU type" if a.profile == "fluid_dual_optimistic" else
                               "per instance" if a.fluid_per_instance else "aggregate by GPU type") if a.profile.startswith("fluid") else None, "objective": a.objective,
         "base_flags": BASE_FLAGS + PROFILES[a.profile] + mode_flags,
@@ -355,6 +368,8 @@ def main():
                 start = ["--start", prev_fluid] if scaling and prev_fluid and a.fluid_per_instance else []
                 if a.profile == "fluid_dual_optimistic":
                     start = ["--optimistic"]
+                elif a.profile == "fluid_dual_blind":
+                    start = ["--blind"]
                 else:
                     start += [] if a.fluid_per_instance else ["--aggregate"]
                 subprocess.run([sys.executable, os.path.join(HERE, "fluid", "solve.py"), "--rate", str(rate),
@@ -374,7 +389,8 @@ def main():
             out = os.path.join(exp, "runs", tag + ".json.gz")  # written gzipped by BLIS
             log = os.path.join(exp, "runs", tag + ".log")
             keep = a.keep_paths == "all" or (a.keep_paths == "first" and seed == seeds[0])
-            cmd = [BIN, "run", *BASE_FLAGS, "--num-instances", str(n_inst), *PROFILES[a.profile], *mode_flags,
+            buffer_flags = ["--fluid-buffer-tokens", f"{a.fluid_buffer_tokens:g}"] if a.profile == "fluid_dual_buffer" else []
+            cmd = [BIN, "run", *BASE_FLAGS, "--num-instances", str(n_inst), *PROFILES[a.profile], *mode_flags, *buffer_flags,
                    *([] if keep else ["--drop-per-request-output"]),
                    "--workload-spec", spec,
                    "--total-kv-blocks", str(a.blocks), *pool_flags,

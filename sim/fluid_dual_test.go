@@ -339,3 +339,45 @@ func TestFluidDualStatic_NeedsARandomStream(t *testing.T) {
 	}()
 	NewFluidDual(fluidTestParams(), FluidDualOptions{Mode: "static"})
 }
+
+// Memory buffer: beta^M_j = eta B / M_j is added to the memory price, so with a positive price the
+// index drops by beta^M_j aM_ij; B = 0 is the unbuffered policy.
+func TestFluidDualBuffer_ShiftsTheMemoryPrice(t *testing.T) {
+	st := atTarget()
+	plain := NewFluidDual(fluidTestParams(), FluidDualOptions{EtaScale: 1})
+	plain.SetState(st.read)
+	buf := NewFluidDual(fluidTestParams(), FluidDualOptions{EtaScale: 1, BufferTokens: 100})
+	buf.SetState(st.read)
+	zero := NewFluidDual(fluidTestParams(), FluidDualOptions{EtaScale: 1, BufferTokens: 0})
+	zero.SetState(st.read)
+	kv, s0 := st["i0"][0], st["i0"][1]
+	for i := 0; i < 2; i++ {
+		// eta = 2, M = 1000, B = 100: beta^M = 0.2; gammaM* = 1 > 0 at target, so the price is not clipped
+		want := plain.Index(i, 0, kv, s0) - 0.2*plain.aM[i][0]
+		if got := buf.Index(i, 0, kv, s0); math.Abs(got-want) > 1e-12 {
+			t.Fatalf("type %d: buffered index %v, want %v", i, got, want)
+		}
+		if zero.Index(i, 0, kv, s0) != plain.Index(i, 0, kv, s0) {
+			t.Fatalf("type %d: B = 0 must equal the unbuffered index", i)
+		}
+	}
+	// the buffer is the same as lowering the memory target by B tokens
+	lower := fluidTestParams()
+	for j := range lower.Instances {
+		lower.Instances[j].KVTarget -= 100
+	}
+	moved := NewFluidDual(lower, FluidDualOptions{EtaScale: 1})
+	moved.SetState(st.read)
+	if math.Abs(moved.Index(1, 0, kv, s0)-buf.Index(1, 0, kv, s0)) > 1e-12 {
+		t.Fatal("a buffer of B tokens must equal a memory target lowered by B")
+	}
+}
+
+func TestFluidDualBuffer_RejectsNegative(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("a negative buffer must panic")
+		}
+	}()
+	NewFluidDual(fluidTestParams(), FluidDualOptions{EtaScale: 1, BufferTokens: -1})
+}

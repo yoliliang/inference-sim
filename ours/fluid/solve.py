@@ -277,6 +277,9 @@ def main():
     ap.add_argument("--workdir", default=os.path.join(common.HERE, "work"))
     ap.add_argument("--out", required=True)
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--blind", action="store_true",
+                    help="congestion-cost blind: solve (28) with all holding costs set to zero (the revenue-only LP) by GPU "
+                         "type; marginal congestion costs are then zero; eta0 stays the true problem's V*/J")
     ap.add_argument("--optimistic", action="store_true",
                     help="solve the optimistic benchmark (draft eq. opt-program) by GPU type instead of (28) and write its "
                          "marginal charges (opt-marginal), minimum-norm multipliers and targets (opt-targets); eta0 stays the "
@@ -300,7 +303,27 @@ def main():
     tag = os.path.splitext(os.path.basename(a.out))[0]
 
     extra_meta, opt = {}, None
-    if a.optimistic:
+    if a.blind:
+        # congestion-cost blind fluid-dual: problem (28) with every holding cost h_i = 0, i.e. the
+        # revenue-only LP over the same constraints (c*_ij = 0). The true problem is solved too, for
+        # V* and the shared gain eta = V*/J; the policy is evaluated with the true objective.
+        import aggregate as agg_mod
+        groups = agg_mod.groups_of(gpus)
+        v_ref, _, st_ref = agg_mod.solve_aggregate(types, groups, lam, a.blocks, fit, a.budget, a.block_size, name=tag + "_ref", workdir=a.workdir)
+        types = [dict(t, h=0.0, d=0.0) for t in types]
+        v_bl, Xg, st = agg_mod.solve_aggregate(types, groups, lam, a.blocks, fit, a.budget, a.block_size, name=tag + "_blind", workdir=a.workdir)
+        cols, rep_of = [], []
+        for k, (g, N) in enumerate(groups):
+            rep_of += [len(cols)] * N
+            cols += [Xg[:, k] / N] * N
+        x = np.array(cols).T
+        c = coefficients(types, gpus, M, b, fit)
+        bound, gap = v_bl, 0.0
+        status = ("optimal" if st == "optimal" else "not proven") + " (blind, h = 0, aggregate by GPU type)"
+        formulation = "blind (h = 0), aggregate by GPU type"
+        extra_meta = {"reference_value": v_ref, "reference_status": st_ref, "blind_value": v_bl,
+                      "eta_note": "eta0 = reference V*/J of the true problem (h as in the objective); blind_value = revenue-only LP optimum"}
+    elif a.optimistic:
         # optimistic benchmark (draft, Section "An Optimistic Benchmark and a Policy Test"): concave,
         # solved by GPU type (the equal split is a global optimum); the reference program (28) is
         # solved too, for V* and for the policy's gain eta = V*/J (the draft keeps the reference gain)
@@ -351,7 +374,7 @@ def main():
         q["g"] = np.array(Hj)
     nu, gm, gb, idx, resid = multipliers(x, c, q, lam, a.workdir, tag + "_kkt", rep_of, l2=a.optimistic)
     J = len(gpus)
-    eta0 = extra_meta["reference_value"] / J if opt is not None else q["value"] / J
+    eta0 = extra_meta["reference_value"] / J if "reference_value" in extra_meta else q["value"] / J
     out = {
         "meta": {
             "created": dt.datetime.now().isoformat(timespec="seconds"),
