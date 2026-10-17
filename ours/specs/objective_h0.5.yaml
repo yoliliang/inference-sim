@@ -1,0 +1,30 @@
+# Holding-cost variant for the blind stress test (2026-10-16): h = 0.5 per job per second for every type; otherwise objective.yaml.
+# pi_out / pi_in = 4 (commercial API output-to-input price ratio), h = 0.03 per second for
+# every type, calibrated so that the uncongested sojourn costs 4 to 16 percent of the reward
+# (type1 7 percent, type2 4 percent, type3 16 percent). Prices are O(1) constants and do not
+# change with the system size n.
+#
+# Objective of the model draft, eq. (10), long-run average net reward per unit time: a type-k
+# job that completes earns
+#     reward_k  = pi_in_k * P + pi_out_k * o          (P input tokens, o output tokens as BLIS counts them)
+# and every type-k job in the system (accepted, not yet departed) costs h_k per second.
+# A rejected job earns and pays nothing. objective.py estimates the rate over the steady-state
+# window of calendar time: rewards of jobs completing in it, minus h times the integral of the
+# number in system over it.
+#
+# Units: rewards per 1,000 tokens, h per second. Only the ratios matter for ranking policies.
+# Rates are read as total Poisson arrival rate; type shares come from the workload spec.
+
+types:
+  type1:            # short chat, P = 256, mean o = 64
+    pi_in: 1.0
+    pi_out: 4.0
+    h: 0.5
+  type2:            # RAG, P = 2048, mean o = 128
+    pi_in: 1.0
+    pi_out: 4.0
+    h: 0.5
+  type3:            # long generation, P = 512, mean o = 1024
+    pi_in: 1.0
+    pi_out: 4.0
+    h: 0.5
