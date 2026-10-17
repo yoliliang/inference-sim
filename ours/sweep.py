@@ -148,6 +148,10 @@ PROFILES = {
     # zero (solve.py --blind); evaluated with the true objective
     "fluid_dual_blind": ["--shared-queue-push=false", "--routing-policy", "fluid-dual",
                          *with_admission(ENGINE_H100, "fluid-dual")],
+    # RO-dual (draft Section "Refined Optimistic Fluid Program and Its Test Policy"): the same index policy
+    # built from the Refined Optimistic program (solve.py --refined); eta stays the reference V*/J
+    "fluid_dual_ro": ["--shared-queue-push=false", "--routing-policy", "fluid-dual",
+                      *with_admission(ENGINE_H100, "fluid-dual")],
     "fluid_static": ["--shared-queue-push=false", "--routing-policy", "fluid-dual",
                      *with_admission(ENGINE_H100, "fluid-dual"), "--fluid-mode", "static"],
     "harness": ["--shared-queue-push=false", "--routing-policy", "weighted",
@@ -315,6 +319,8 @@ def main():
         "fluid_gap": a.fluid_gap if a.profile.startswith("fluid") else None,
         "fluid_buffer_tokens": a.fluid_buffer_tokens if a.profile == "fluid_dual_buffer" else None,
         "fluid_formulation": ("optimistic, aggregate by GPU type" if a.profile == "fluid_dual_optimistic" else
+                              "refined optimistic (RO), aggregate by GPU type" if a.profile == "fluid_dual_ro" else
+                              "blind (h = 0), aggregate by GPU type" if a.profile == "fluid_dual_blind" else
                               "per instance" if a.fluid_per_instance else "aggregate by GPU type") if a.profile.startswith("fluid") else None, "objective": a.objective,
         "base_flags": BASE_FLAGS + PROFILES[a.profile] + mode_flags,
         "extra_flags": a.extra,
@@ -370,6 +376,8 @@ def main():
                     start = ["--optimistic"]
                 elif a.profile == "fluid_dual_blind":
                     start = ["--blind"]
+                elif a.profile == "fluid_dual_ro":
+                    start = ["--refined"]
                 else:
                     start += [] if a.fluid_per_instance else ["--aggregate"]
                 subprocess.run([sys.executable, os.path.join(HERE, "fluid", "solve.py"), "--rate", str(rate),

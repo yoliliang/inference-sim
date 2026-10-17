@@ -24,6 +24,13 @@ and dual objectives (the dual one is the solver's bound).
 
 Marginal charge (opt-marginal), per instance at x^U with D_j = 1 - rho_j:
     c_ij = tau0_j h_i s_i + tau0_j (2 G_j g_ij / D_j + G_j^2 w_ij / D_j^2)
+
+Refined Optimistic program (draft eq. ro-program, refined=True): the holding charge also carries the
+initial-wait lower bound F_j = sum_i h_i x_ij^2 / (2 lambda_i), lambda_i the EXTERNAL arrival rate:
+    H_j = tau0_j A_j + tau0_j (G_j^2 + F_j) / (1 - rho_j)                 (ro-holding)
+By GPU type the cone is Ghat^2 + sum_i h_i X_i^2 / (2 lambda_i) <= z (N - sum_i w_i X_i), and the
+marginal charge (ro-marginal) is
+    c_ij = tau0 h_i s_i + tau0 [(2 G_j g_ij + h_i x_ij / lambda_i) / D_j + (G_j^2 + F_j) w_ij / D_j^2]
 """
 import math
 import os
@@ -45,7 +52,7 @@ def g_coefficient(t, f):
     return float(math.sqrt(h * f["taup"] * P) + (S * np.sqrt(h * f["taukv"] * (P + s - 1.0))).sum())
 
 
-def constants(types, gpu, blocks, fit, budget=8192, block_size=16):
+def constants(types, gpu, blocks, fit, budget=8192, block_size=16, lam=None, refined=False):
     f = fit[gpu]
     M = common.blocks_for(gpu, blocks) * block_size
     P = np.array([t["prompt"] for t in types])
@@ -57,21 +64,25 @@ def constants(types, gpu, blocks, fit, budget=8192, block_size=16):
         aB=w + f["tau0"] * np.array([t["beta"] for t in types]) / budget,
         hs=np.array([t["h"] * t["s"] for t in types]),
         g=np.array([g_coefficient(t, f) for t in types]),
-        r=np.array([t["r"] for t in types]))
+        r=np.array([t["r"] for t in types]),
+        # refined: waiting coefficient h_i / (2 lambda_i) per unit x_ij^2 (external lambda_i); 0 otherwise
+        hw=(np.array([t["h"] for t in types]) / (2.0 * np.asarray(lam, float)) if refined else np.zeros(len(types))))
 
 
 def per_instance_cost(c, x):
     """H_j(x) of one instance at per-instance rates x (vector over types)."""
     rho = float(c["w"] @ x)
     G = float(c["g"] @ x)
-    return c["tau0"] * float(c["hs"] @ x) + c["tau0"] * G * G / (1.0 - rho)
+    F = float(c["hw"] @ (x * x))
+    return c["tau0"] * float(c["hs"] @ x) + c["tau0"] * (G * G + F) / (1.0 - rho)
 
 
 def marginal(c, x):
-    """c_ij of eq. opt-marginal at per-instance rates x."""
+    """c_ij of eq. opt-marginal (ro-marginal when refined) at per-instance rates x."""
     D = 1.0 - float(c["w"] @ x)
     G = float(c["g"] @ x)
-    return c["tau0"] * c["hs"] + c["tau0"] * (2.0 * G * c["g"] / D + G * G * c["w"] / D ** 2)
+    F = float(c["hw"] @ (x * x))
+    return c["tau0"] * c["hs"] + c["tau0"] * ((2.0 * G * c["g"] + 2.0 * c["hw"] * x) / D + (G * G + F) * c["w"] / D ** 2)
 
 
 def _barrier_objectives(log):
@@ -84,10 +95,11 @@ def _barrier_objectives(log):
     return last or (None, None)
 
 
-def solve_optimistic(types, groups, lam, blocks, fit, budget=8192, block_size=16, name="opt", workdir=None):
-    """groups: list of (gpu, N). Returns dict(value, X (I x G), primal, dual, status, violation, log)."""
+def solve_optimistic(types, groups, lam, blocks, fit, budget=8192, block_size=16, name="opt", workdir=None, refined=False):
+    """groups: list of (gpu, N). refined=True adds the initial-wait term F_j (Refined Optimistic program).
+    Returns dict(value, X (I x G), primal, dual, status, violation, log, consts)."""
     I, G = len(types), len(groups)
-    cs = [constants(types, gpu, blocks, fit, budget, block_size) for gpu, _ in groups]
+    cs = [constants(types, gpu, blocks, fit, budget, block_size, lam=lam, refined=refined) for gpu, _ in groups]
     obj, cons, bounds = [], [], []
     for i in range(I):
         cons.append(f" flow_{i}: " + " ".join(term(1.0, f"x_{i}_{k}") for k in range(G)) + f" <= {num(lam[i])}")
@@ -100,11 +112,28 @@ def solve_optimistic(types, groups, lam, blocks, fit, budget=8192, block_size=16
         # Ghat_k = sum_i g_i X_i ; y_k = N - sum_i w_i X_i ; Ghat_k^2 <= z_k y_k
         cons.append(f" gdef_{k}: 1 G_{k} " + " ".join(term(-c["g"][i], X[i]) for i in range(I)) + " = 0")
         cons.append(f" ydef_{k}: 1 y_{k} " + " ".join(term(c["w"][i], X[i]) for i in range(I)) + f" = {num(N)}")
-        cons.append(f" cone_{k}: [ G_{k} ^ 2 - z_{k} * y_{k} ] <= 0")
+        # per type: sum over the N_k instances of h_i (X_i/N)^2 / (2 lambda_i), times N / (N - wX) after the
+        # per-instance denominator (1 - wX/N) is scaled by N: that leaves h_i X_i^2 / (2 lambda_i) over N - wX
+        # written with u_i = sqrt(h_i / (2 lambda_i)) X_i in linear rows (the draft's v_j), so the cone
+        # G^2 + sum_i u_i^2 <= z y has unit coefficients (small squared coefficients stall the barrier)
+        waits = ""
+        for i in range(I):
+            if c["hw"][i] > 0:
+                cons.append(f" udef_{i}_{k}: 1 u_{i}_{k} {term(-math.sqrt(c['hw'][i]), X[i])} = 0")
+                waits += f" + u_{i}_{k} ^ 2"
+        cons.append(f" cone_{k}: [ G_{k} ^ 2{waits} - z_{k} * y_{k} ] <= 0")
         obj += [term(c["r"][i] - c["tau0"] * c["hs"][i], X[i]) for i in range(I)] + [term(-c["tau0"], f"z_{k}")]
     lp = "\n".join(["Maximize", " obj: " + " ".join(obj), "Subject To", *cons, "Bounds", *bounds, "End"]) + "\n"
-    vals, log = run_gurobi(lp, workdir or os.path.join(common.HERE, "work"), name,
-                           {"BarQCPConvTol": 1e-8, "BarConvTol": 1e-9, "FeasibilityTol": 1e-8, "OptimalityTol": 1e-9})
+    params = {"BarQCPConvTol": 1e-8, "BarConvTol": 1e-9, "FeasibilityTol": 1e-8, "OptimalityTol": 1e-9}
+    # the refined program's small waiting terms can leave the barrier short of its certificate; try
+    # numerically careful settings in turn and keep the first run Gurobi reports optimal
+    tries = ([{"NumericFocus": 3}, {"NumericFocus": 3, "BarHomogeneous": 1}, {"BarHomogeneous": 1}, {}]
+             if refined else [{}])
+    for extra in tries:
+        vals, log = run_gurobi(lp, workdir or os.path.join(common.HERE, "work"), name, {**params, **extra})
+        primal, dual = _barrier_objectives(log)
+        if re.search(r"Optimal objective", log) and primal is not None and dual is not None                 and abs(dual - primal) <= 1e-8 * max(1.0, abs(primal)):
+            break
     X = np.array([[vals.get(f"x_{i}_{k}", 0.0) for k in range(G)] for i in range(I)])
     value, viol = 0.0, 0.0
     for k, (gpu, N) in enumerate(groups):

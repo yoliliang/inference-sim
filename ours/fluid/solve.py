@@ -280,6 +280,10 @@ def main():
     ap.add_argument("--blind", action="store_true",
                     help="congestion-cost blind: solve (28) with all holding costs set to zero (the revenue-only LP) by GPU "
                          "type; marginal congestion costs are then zero; eta0 stays the true problem's V*/J")
+    ap.add_argument("--refined", action="store_true",
+                    help="solve the Refined Optimistic program (draft eq. ro-program: processing lower bound plus the "
+                         "initial-wait term F_j) by GPU type and write the RO-dual inputs (ro-marginal, minimum-norm "
+                         "multipliers, centers ro-centers); eta0 stays the reference V*/J")
     ap.add_argument("--optimistic", action="store_true",
                     help="solve the optimistic benchmark (draft eq. opt-program) by GPU type instead of (28) and write its "
                          "marginal charges (opt-marginal), minimum-norm multipliers and targets (opt-targets); eta0 stays the "
@@ -323,7 +327,7 @@ def main():
         formulation = "blind (h = 0), aggregate by GPU type"
         extra_meta = {"reference_value": v_ref, "reference_status": st_ref, "blind_value": v_bl,
                       "eta_note": "eta0 = reference V*/J of the true problem (h as in the objective); blind_value = revenue-only LP optimum"}
-    elif a.optimistic:
+    elif a.optimistic or a.refined:
         # optimistic benchmark (draft, Section "An Optimistic Benchmark and a Policy Test"): concave,
         # solved by GPU type (the equal split is a global optimum); the reference program (28) is
         # solved too, for V* and for the policy's gain eta = V*/J (the draft keeps the reference gain)
@@ -331,7 +335,10 @@ def main():
         import optimistic as opt_mod
         groups = agg_mod.groups_of(gpus)
         v_ref, _, st_ref = agg_mod.solve_aggregate(types, groups, lam, a.blocks, fit, a.budget, a.block_size, name=tag + "_ref", workdir=a.workdir)
-        opt = opt_mod.solve_optimistic(types, groups, lam, a.blocks, fit, a.budget, a.block_size, name=tag + "_opt", workdir=a.workdir)
+        opt = opt_mod.solve_optimistic(types, groups, lam, a.blocks, fit, a.budget, a.block_size, name=tag + "_opt", workdir=a.workdir,
+                                       refined=a.refined)
+        if a.refined:  # the processing-only optimistic value, for reference only
+            u_opt = opt_mod.solve_optimistic(types, groups, lam, a.blocks, fit, a.budget, a.block_size, name=tag + "_uopt", workdir=a.workdir)["value"]
         cols, rep_of, cU, Hj = [], [], [], []
         for k, (g, N) in enumerate(groups):
             xk = opt["X"][:, k] / N
@@ -343,13 +350,18 @@ def main():
         c = coefficients(types, gpus, M, b, fit)
         bound = opt["dual"]
         gap = (bound - opt["value"]) / abs(opt["value"]) if bound is not None and opt["value"] else None
-        status = ("optimal" if opt["status"] == "optimal" else "not proven") + " (optimistic, aggregate by GPU type)"
-        formulation = "optimistic, aggregate by GPU type"
+        kind = "refined optimistic (RO)" if a.refined else "optimistic"
+        status = ("optimal" if opt["status"] == "optimal" else "not proven") + f" ({kind}, aggregate by GPU type)"
+        formulation = f"{kind}, aggregate by GPU type"
         extra_meta = {"reference_value": v_ref, "reference_status": st_ref, "optimistic_value": opt["value"],
                       "barrier_primal": opt["primal"], "barrier_dual": opt["dual"], "primal_violation": opt["violation"],
                       "optimistic_eta0": opt["value"] / len(gpus),
                       "eta_note": "eta0 = reference V*/J (the draft keeps the reference policy's gain); optimistic_eta0 = U_opt/J",
                       "g": [float(v) for v in opt["consts"][0]["g"]]}
+        if a.refined:
+            extra_meta.update({"ro_value": opt["value"], "optimistic_processing_only_value": u_opt,
+                               "eta_note": "eta0 = reference V*/J (the draft keeps the baseline gain); optimistic_eta0 = U_RO/J",
+                               "wait_coefficients": [float(v) for v in opt["consts"][0]["hw"]]})
     elif a.aggregate:
         import aggregate as agg_mod
         groups = agg_mod.groups_of(gpus)
@@ -372,7 +384,7 @@ def main():
         q["cstar"] = np.array(cU).T
         q["value"] = opt["value"]
         q["g"] = np.array(Hj)
-    nu, gm, gb, idx, resid = multipliers(x, c, q, lam, a.workdir, tag + "_kkt", rep_of, l2=a.optimistic)
+    nu, gm, gb, idx, resid = multipliers(x, c, q, lam, a.workdir, tag + "_kkt", rep_of, l2=(a.optimistic or a.refined))
     J = len(gpus)
     eta0 = extra_meta["reference_value"] / J if "reference_value" in extra_meta else q["value"] / J
     out = {
@@ -381,7 +393,7 @@ def main():
             "rate": a.rate, "instances": J, "blocks": a.blocks, "block_size": a.block_size, "budget": a.budget,
             "value": q["value"], "bound": bound, "gap": gap, "status": status, "eta0": eta0,
             "kkt_residual": resid, "formulation": formulation,
-            "solver": ("gurobi_cl barrier (convex, rotated second-order cone), BarQCPConvTol 1e-8" if a.optimistic else
+            "solver": ("gurobi_cl barrier (convex, rotated second-order cone), BarQCPConvTol 1e-8" + (", NumericFocus 3" if a.refined else "") if (a.optimistic or a.refined) else
                        "gurobi_cl NonConvex=2, " + ("aggregate solved to MIPGap 1e-9" if a.aggregate else f"MIPGap {GAP}")),
             **extra_meta,
             "spec": os.path.relpath(a.spec, common.ROOT).replace(os.sep, "/"),
