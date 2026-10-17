@@ -100,41 +100,52 @@ def solve_optimistic(types, groups, lam, blocks, fit, budget=8192, block_size=16
     Returns dict(value, X (I x G), primal, dual, status, violation, log, consts)."""
     I, G = len(types), len(groups)
     cs = [constants(types, gpu, blocks, fit, budget, block_size, lam=lam, refined=refined) for gpu, _ in groups]
+    # The refined program is written in per-instance units (x = X / N, objective times N), which keeps the
+    # variables O(1) at every n; at n = 64 the total-flow form left the barrier without a certificate.
+    # The processing-only optimistic program keeps its original total-flow form (results unchanged).
+    per = bool(refined)
     obj, cons, bounds = [], [], []
     for i in range(I):
-        cons.append(f" flow_{i}: " + " ".join(term(1.0, f"x_{i}_{k}") for k in range(G)) + f" <= {num(lam[i])}")
-        bounds += [f" 0 <= x_{i}_{k} <= {num(lam[i])}" for k in range(G)]
+        cons.append(f" flow_{i}: " + " ".join(term(groups[k][1] if per else 1.0, f"x_{i}_{k}") for k in range(G)) + f" <= {num(lam[i])}")
+        bounds += [f" 0 <= x_{i}_{k} <= {num(lam[i] / groups[k][1] if per else lam[i])}" for k in range(G)]
     for k, (gpu, N) in enumerate(groups):
         c = cs[k]
         X = [f"x_{i}_{k}" for i in range(I)]
-        cons.append(f" mem_{k}: " + " ".join(term(c["aM"][i], X[i]) for i in range(I)) + f" <= {num(N)}")
-        cons.append(f" tok_{k}: " + " ".join(term(c["aB"][i], X[i]) for i in range(I)) + f" <= {num(N)}")
-        # Ghat_k = sum_i g_i X_i ; y_k = N - sum_i w_i X_i ; Ghat_k^2 <= z_k y_k
+        rhs = 1.0 if per else N
+        cons.append(f" mem_{k}: " + " ".join(term(c["aM"][i], X[i]) for i in range(I)) + f" <= {num(rhs)}")
+        cons.append(f" tok_{k}: " + " ".join(term(c["aB"][i], X[i]) for i in range(I)) + f" <= {num(rhs)}")
+        # G_k = sum_i g_i x_i ; y_k = rhs - sum_i w_i x_i ; G_k^2 (+ waiting squares) <= z_k y_k
         cons.append(f" gdef_{k}: 1 G_{k} " + " ".join(term(-c["g"][i], X[i]) for i in range(I)) + " = 0")
-        cons.append(f" ydef_{k}: 1 y_{k} " + " ".join(term(c["w"][i], X[i]) for i in range(I)) + f" = {num(N)}")
-        # per type: sum over the N_k instances of h_i (X_i/N)^2 / (2 lambda_i), times N / (N - wX) after the
-        # per-instance denominator (1 - wX/N) is scaled by N: that leaves h_i X_i^2 / (2 lambda_i) over N - wX
-        # written with u_i = sqrt(h_i / (2 lambda_i)) X_i in linear rows (the draft's v_j), so the cone
-        # G^2 + sum_i u_i^2 <= z y has unit coefficients (small squared coefficients stall the barrier)
+        cons.append(f" ydef_{k}: 1 y_{k} " + " ".join(term(c["w"][i], X[i]) for i in range(I)) + f" = {num(rhs)}")
+        # waiting term: u_i = sqrt(h_i / (2 lambda_i)) x_i in linear rows (the draft's v_j) so the cone has unit
+        # coefficients. Per instance F = sum_i h_i x_i^2 / (2 lambda_i) over 1 - w x; in total-flow form the
+        # same identity gives h_i X_i^2 / (2 lambda_i) over N - w X.
         waits = ""
         for i in range(I):
             if c["hw"][i] > 0:
                 cons.append(f" udef_{i}_{k}: 1 u_{i}_{k} {term(-math.sqrt(c['hw'][i]), X[i])} = 0")
                 waits += f" + u_{i}_{k} ^ 2"
         cons.append(f" cone_{k}: [ G_{k} ^ 2{waits} - z_{k} * y_{k} ] <= 0")
-        obj += [term(c["r"][i] - c["tau0"] * c["hs"][i], X[i]) for i in range(I)] + [term(-c["tau0"], f"z_{k}")]
+        mult = N if per else 1.0
+        obj += [term(mult * (c["r"][i] - c["tau0"] * c["hs"][i]), X[i]) for i in range(I)] + [term(-mult * c["tau0"], f"z_{k}")]
     lp = "\n".join(["Maximize", " obj: " + " ".join(obj), "Subject To", *cons, "Bounds", *bounds, "End"]) + "\n"
     params = {"BarQCPConvTol": 1e-8, "BarConvTol": 1e-9, "FeasibilityTol": 1e-8, "OptimalityTol": 1e-9}
-    # the refined program's small waiting terms can leave the barrier short of its certificate; try
-    # numerically careful settings in turn and keep the first run Gurobi reports optimal
+    # numerically careful settings in turn for the refined program; keep the first run Gurobi certifies
+    # (optimal, primal and dual agreeing to 1e-8), otherwise the run with the smallest primal-dual gap
     tries = ([{"NumericFocus": 3}, {"NumericFocus": 3, "BarHomogeneous": 1}, {"BarHomogeneous": 1}, {}]
              if refined else [{}])
+    best = None
     for extra in tries:
         vals, log = run_gurobi(lp, workdir or os.path.join(common.HERE, "work"), name, {**params, **extra})
         primal, dual = _barrier_objectives(log)
-        if re.search(r"Optimal objective", log) and primal is not None and dual is not None                 and abs(dual - primal) <= 1e-8 * max(1.0, abs(primal)):
+        ok = bool(re.search(r"Optimal objective", log)) and primal is not None and dual is not None
+        gap = abs(dual - primal) / max(1.0, abs(primal)) if primal is not None and dual is not None else float("inf")
+        if best is None or (ok, -gap) > (best[0], -best[1]):
+            best = (ok, gap, vals, log)
+        if ok and gap <= 1e-8:
             break
-    X = np.array([[vals.get(f"x_{i}_{k}", 0.0) for k in range(G)] for i in range(I)])
+    _, _, vals, log = best
+    X = np.array([[vals.get(f"x_{i}_{k}", 0.0) * (groups[k][1] if per else 1.0) for k in range(G)] for i in range(I)])
     value, viol = 0.0, 0.0
     for k, (gpu, N) in enumerate(groups):
         c = cs[k]
