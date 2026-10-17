@@ -385,6 +385,21 @@ def main():
         q["value"] = opt["value"]
         q["g"] = np.array(Hj)
     nu, gm, gb, idx, resid = multipliers(x, c, q, lam, a.workdir, tag + "_kkt", rep_of, l2=(a.optimistic or a.refined))
+    # On a used route KKT holds with equality: r_i - c_ij - gammaM_j aM_ij - gammaB_j aB_ij = nu_i. The
+    # computed c_ij inherits the solver's precision in x (about 1e-8 relative), so the fluid index of a
+    # used route can come out at, e.g., -7e-7 instead of nu_i = 0. With a zero memory price that flips a
+    # partly admitted type to "always reject" (the policy accepts only if the index is >= -1e-9). Snap such
+    # residuals (at most 1e-4 relative to r_i; anything larger is left alone and stays visible) into c_ij.
+    snap = 0.0
+    tol_x = 1e-7 * max(1.0, float(lam.max()))
+    r_vec = np.array([t["r"] for t in types])
+    for i in range(x.shape[0]):
+        for j in range(x.shape[1]):
+            dlt = float(idx[i, j] - nu[i])
+            if x[i, j] > tol_x and dlt != 0.0 and abs(dlt) <= 1e-4 * max(1.0, abs(r_vec[i])):
+                q["cstar"][i, j] += dlt
+                idx[i, j] = nu[i]
+                snap = max(snap, abs(dlt))
     J = len(gpus)
     eta0 = extra_meta["reference_value"] / J if "reference_value" in extra_meta else q["value"] / J
     out = {
@@ -392,7 +407,7 @@ def main():
             "created": dt.datetime.now().isoformat(timespec="seconds"),
             "rate": a.rate, "instances": J, "blocks": a.blocks, "block_size": a.block_size, "budget": a.budget,
             "value": q["value"], "bound": bound, "gap": gap, "status": status, "eta0": eta0,
-            "kkt_residual": resid, "formulation": formulation,
+            "kkt_residual": resid, "kkt_snap_max": snap, "formulation": formulation,
             "solver": ("gurobi_cl barrier (convex, rotated second-order cone), BarQCPConvTol 1e-8" + (", NumericFocus 3" if a.refined else "") if (a.optimistic or a.refined) else
                        "gurobi_cl NonConvex=2, " + ("aggregate solved to MIPGap 1e-9" if a.aggregate else f"MIPGap {GAP}")),
             **extra_meta,
